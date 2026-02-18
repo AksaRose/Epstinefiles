@@ -1,0 +1,31 @@
+# DOJ PDF downloader
+requests>=2.28.0
+beautifulsoup4>=4.11.0
+lxml>=4.9.0
+
+# Optional: PDF to images for Vision Transformer (ViT)
+# Requires: pip install pymupdf (or use pdf2image + system Poppler)
+pymupdf>=1.23.0
+
+# Image processing and CV
+Pillow>=10.0.0
+opencv-python-headless>=4.9.0.0
+
+# Face recognition (local, no C++ build)
+deepface>=0.0.79
+# Required by DeepFace's RetinaFace when TensorFlow 2.20+ is present
+tf-keras>=2.20.0
+
+# Vector store and schema
+lancedb>=0.9.0
+pyarrow>=15.0.0
+
+# Together AI client (or generic OpenAI-compatible client)
+together>=1.2.0
+
+# General utilities
+numpy>=1.26.0
+python-dotenv>=1.0.0
+
+# Search UI
+streamlit>=1.28.0
