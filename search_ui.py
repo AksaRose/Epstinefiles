@@ -3,6 +3,12 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+import zipfile
+from pathlib import Path
+from urllib.request import urlopen
+
 import lancedb
 import numpy as np
 import streamlit as st
@@ -11,9 +17,71 @@ from config import load_settings
 from pipeline.embed import embed_query
 
 
+def _get_download_url() -> str | None:
+    """LANCEDB_DOWNLOAD_URL from env or Streamlit secrets (for cloud deploy)."""
+    url = os.environ.get("LANCEDB_DOWNLOAD_URL")
+    if url:
+        return url.strip() or None
+    try:
+        return st.secrets.get("LANCEDB_DOWNLOAD_URL") or None
+    except Exception:
+        return None
+
+
+def _ensure_lancedb(settings) -> bool:
+    """
+    If LanceDB dir is missing and LANCEDB_DOWNLOAD_URL is set, download zip and unzip.
+    Zip must contain the table at top level (e.g. epstein_images.lance/).
+    """
+    table_lance = settings.lancedb_dir / f"{settings.table_name}.lance"
+    if table_lance.exists():
+        return True
+
+    url = _get_download_url()
+    if not url:
+        return False
+
+    settings.lancedb_dir.mkdir(parents=True, exist_ok=True)
+    with st.spinner("Downloading database (first run or cold start). This may take a few minutes."):
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as f:
+                tmp = f.name
+            try:
+                with urlopen(url) as resp:
+                    chunk_size = 1 << 20  # 1 MB
+                    total = 0
+                    progress = st.progress(0.0, text="Downloading...")
+                    while True:
+                        chunk = resp.read(chunk_size)
+                        if not chunk:
+                            break
+                        with open(tmp, "ab") as out:
+                            out.write(chunk)
+                        total += len(chunk)
+                        # Update progress (we don't know total size)
+                        progress.progress(min(1.0, total / (100 * chunk_size)), text=f"Downloaded {total // (1 << 20)} MB")
+                    progress.progress(1.0, text="Extracting...")
+                with zipfile.ZipFile(tmp, "r") as zf:
+                    zf.extractall(settings.lancedb_dir)
+            finally:
+                try:
+                    Path(tmp).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            return True
+        except Exception as e:
+            st.error(f"Failed to download database: {e}")
+            return False
+
+
 @st.cache_resource
 def get_table():
     settings = load_settings()
+    if not _ensure_lancedb(settings):
+        raise FileNotFoundError(
+            "LanceDB not found. Run the pipeline locally (python run_pipeline.py) or set "
+            "LANCEDB_DOWNLOAD_URL to a zip of the lancedb folder for cloud deploy."
+        )
     db = lancedb.connect(str(settings.lancedb_dir))
     return db.open_table(settings.table_name), settings
 

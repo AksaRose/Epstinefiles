@@ -85,6 +85,33 @@ Then open the URL shown (e.g. http://localhost:8501). You can search by keyword 
 
 Requires `TOGETHER_API_KEY` in `.env` (to embed the search query).
 
+### Deploying the Search UI (e.g. Streamlit Cloud)
+
+The LanceDB index is too large for GitHub. To run the app in the cloud:
+
+1. **Build the DB locally** (one time):
+   ```bash
+   python run_pipeline.py   # creates lancedb/
+   ```
+
+2. **Create a zip of the DB** (contents of `lancedb/`, not the folder itself):
+   ```bash
+   cd lancedb && zip -r ../lancedb.zip . && cd ..
+   ```
+   The zip must contain `epstein_images.lance/` at the top level.
+
+3. **Upload the zip** to a URL (e.g. Google Drive “share link”, Dropbox, S3 public URL, or a GitHub Release asset). Get a **direct download URL** (for Dropbox/Drive, use “direct link” or “raw” variants so the URL ends in the file and returns the zip).
+
+4. **Set the URL in the host:**
+   - **Streamlit Cloud:** App → Settings → Secrets → add:
+     ```toml
+     LANCEDB_DOWNLOAD_URL = "https://your-direct-url-to/lancedb.zip"
+     TOGETHER_API_KEY = "your-key"
+     ```
+   - **Local / env:** `export LANCEDB_DOWNLOAD_URL="https://..."`
+
+On first run (or after a cold start), the app will download and unzip the DB, then run search. This can take several minutes for a large zip.
+
 ## Requirements
 
 - **Downloader:** `requests`, `beautifulsoup4`, `lxml`
