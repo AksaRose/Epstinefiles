@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 import lancedb
 import numpy as np
 import streamlit as st
+from groq import Groq
 
 from config import load_settings
 from pipeline.embed import embed_query
@@ -31,6 +32,33 @@ def _get_download_url() -> str | None:
 
 # Browser User-Agent so Google Drive doesn't block the request
 _UA = "Mozilla/5.0 (Windows NT 10.0; rv:91.0) Gecko/20100101 Firefox/91.0"
+
+# Simple persistent visitor counter
+_VISITOR_FILE = Path("visitor_count.txt")
+
+
+def _load_visitor_count() -> int:
+    try:
+        return int(_VISITOR_FILE.read_text().strip() or "0")
+    except FileNotFoundError:
+        return 0
+    except ValueError:
+        return 0
+
+
+def _increment_visitor_count() -> int:
+    """
+    Increment the global visitor count once per browser session.
+    """
+    count = _load_visitor_count()
+    if not st.session_state.get("visitor_counted"):
+        count += 1
+        try:
+            _VISITOR_FILE.write_text(str(count))
+        except Exception:
+            pass
+        st.session_state["visitor_counted"] = True
+    return count
 
 
 def _resolve_google_drive_url(url: str) -> str:
@@ -131,6 +159,83 @@ def _ensure_lancedb(settings) -> bool:
             return False
 
 
+def _analyze_query(user_query: str, settings) -> tuple[str, str]:
+    """
+    Use Groq to classify intent (question vs keyword search) and produce a search-optimized query
+    for better retrieval. Returns (intent, search_query).
+    """
+    groq_key = getattr(settings, "groq_api_key", None) or os.environ.get("GROQ_API_KEY")
+    if not groq_key or not user_query.strip():
+        return ("keyword_search", user_query.strip())
+
+    model = getattr(settings, "groq_summary_model", None) or os.environ.get("GROQ_SUMMARY_MODEL", "llama-3.3-70b-versatile")
+    prompt = (
+        "You are analyzing a user input for an image search gallery about DOJ-released materials related to the Epstein case.\n\n"
+        f"User input: \"{user_query.strip()}\"\n\n"
+        "Reply with exactly two lines:\n"
+        "Line 1: Either QUESTION or KEYWORD (whether the user asked a question or is searching by topic/keywords).\n"
+        "Line 2: A short search query (keywords or key phrases) that would best find relevant images. For questions, turn the question into search keywords (e.g. \"Who was at the party?\" -> \"party, people, guests, gathering\"). For keyword search, use or lightly expand the user's words. Keep line 2 under 15 words."
+    )
+    try:
+        client = Groq(api_key=groq_key)
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=80,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+        if len(lines) >= 2:
+            intent = "question" if "QUESTION" in lines[0].upper() else "keyword_search"
+            search_query = lines[1].strip()
+            if search_query:
+                return (intent, search_query)
+    except Exception:
+        pass
+    return ("keyword_search", user_query.strip())
+
+
+def _summarize_results(query: str, captions: list[str], settings) -> str | None:
+    """
+    Use Groq (Llama) to generate a brief, answer-like summary grounded in the top results.
+    """
+    if not captions:
+        return None
+    groq_key = getattr(settings, "groq_api_key", None) or os.environ.get("GROQ_API_KEY")
+    if not groq_key:
+        return None
+
+    model = getattr(settings, "groq_summary_model", None) or os.environ.get("GROQ_SUMMARY_MODEL", "llama-3.3-70b-versatile")
+    client = Groq(api_key=groq_key)
+    top_caps = captions[: min(20, len(captions))]
+    numbered = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(top_caps))
+    prompt = (
+        "You are answering a user's query using only what appears in a set of image captions from DOJ-released materials "
+        "related to the Epstein case.\n\n"
+        f"User query:\n{query}\n\n"
+        "Captions of the most relevant images:\n"
+        f"{numbered}\n\n"
+        "Based only on these captions, write a short, neutral answer (2–4 sentences) that speaks directly to the user's query. "
+        "If the captions do not provide enough information to fully answer the query, say that clearly and instead describe what "
+        "the images do show that is relevant. Do not speculate or introduce people, places, or events that are not mentioned in "
+        "the captions."
+    )
+
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=220,
+        )
+    except Exception:
+        return None
+
+    choice = resp.choices[0]
+    text = choice.message.content
+    cleaned = (text or "").strip()
+    return cleaned or None
+
+
 @st.cache_resource
 def get_table():
     settings = load_settings()
@@ -159,9 +264,62 @@ def search(query: str, k: int = 12, dataset_id: int | None = None):
 
 
 def main():
-    st.set_page_config(page_title="Epstein Image Search", layout="wide")
-    st.title("Epstein case files")
-    st.caption("Search by keyword (e.g. island, party, Epstein, Maxwell, house). Results are ranked by semantic similarity.")
+    # Transparent 1x1 PNG so the tab doesn't show the Streamlit favicon
+    _BLANK_FAVICON = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+    st.set_page_config(page_title="Epstein Image Search", layout="wide", page_icon=_BLANK_FAVICON)
+    # Microsoft Clarity analytics
+    st.components.v1.html(
+        """
+        <script type="text/javascript">
+            (function(c,l,a,r,i,t,y){
+                c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+                t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+                y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+            })(window, document, "clarity", "script", "vjtwq5oy8x");
+        </script>
+        """,
+        height=0,
+    )
+    st.title("Epstein Case Image Gallery")
+    with st.sidebar:
+        st.markdown("### Support this project")
+        st.markdown(
+            "Any support from this project helps **keep this app online** and "
+            "**add more documents, images, and search features** over time."
+        )
+        st.components.v1.html(
+            """
+            <script
+                data-name="BMC-Widget"
+                data-cfasync="false"
+                src="https://cdnjs.buymeacoffee.com/1.0.0/widget.prod.min.js"
+                data-id="aksarose"
+                data-description="Support me on Buy me a coffee!"
+                data-message=""
+                data-color="#5F7FFF"
+                data-position="Left"
+                data-x_margin="18"
+                data-y_margin="18">
+            </script>
+            """,
+            height=80,
+        )
+    st.markdown(
+        "This is an image gallery of materials related to the Epstein case. You can search across all images by keyword or topic. "
+        "**All images displayed here are from documents released by the U.S. Department of Justice (DOJ)** as part of its disclosure. "
+        "Use the search box below to find images (e.g., by place, person, or subject)."
+    )
+
+    with st.expander("About this gallery & disclaimer", expanded=False):
+        st.markdown(
+            "**Current scope:** This gallery currently includes approximately **250 documents** across DOJ disclosure datasets 1–5. "
+            "That is roughly one fifth of the material released so far. The focus here is on **photographs** rather than emails or text-heavy images; "
+            "the indexed set contains **2,000+ images**."
+        )
+        st.markdown(
+            "**Disclaimer:** Captions and metadata are generated with AI (LLM) and **may contain errors**. "
+            "This material is sensitive. Do not rely on it for legal or factual conclusions; refer to official DOJ sources when accuracy matters."
+        )
 
     try:
         table, settings = get_table()
@@ -189,9 +347,11 @@ def main():
         st.error("Set TOGETHER_API_KEY in .env to run search (embedding the query).")
         return
 
+    with st.spinner("Analyzing query..."):
+        intent, search_query = _analyze_query(query, settings)
     with st.spinner("Searching..."):
         try:
-            results = search(query, k=k, dataset_id=dataset_id)
+            results = search(search_query, k=k, dataset_id=dataset_id)
         except Exception as e:
             st.exception(e)
             return
@@ -199,6 +359,20 @@ def main():
     if results is None or results.empty:
         st.warning("No results.")
         return
+
+    # High-level Groq summary: use original query so the answer matches what the user asked
+    captions_for_summary: list[str] = []
+    if "caption" in results.columns:
+        for c in results["caption"].tolist():
+            if c is None:
+                continue
+            s = str(c).strip()
+            if s:
+                captions_for_summary.append(s)
+    summary = _summarize_results(query, captions_for_summary, settings)
+    if summary:
+        st.subheader("Summary of results")
+        st.markdown(summary)
 
     # Grid of results: 3 per row
     ncols = 3
@@ -211,22 +385,6 @@ def main():
                 if blob is not None and isinstance(blob, (bytes, bytearray)):
                     st.image(blob, use_container_width=True)
                 st.markdown(f"**{row.get('source_file', '')}** p.{row.get('page_no', '')}")
-                _celeb = row.get("celebrities")
-                if _celeb is None:
-                    celebs = []
-                elif isinstance(_celeb, np.ndarray):
-                    celebs = _celeb.tolist()
-                elif isinstance(_celeb, (list, tuple)):
-                    celebs = list(_celeb)
-                else:
-                    celebs = [_celeb] if _celeb is not None else []
-                if celebs:
-                    st.caption(f"People: {', '.join(str(c) for c in celebs)}")
-                cap = row.get("caption")
-                cap = "" if cap is None else str(cap)
-                if cap:
-                    st.caption(cap[:200] + ("..." if len(cap) > 200 else ""))
-                st.caption(f"Dataset {row.get('dataset_id', '')} · distance {row.get('_distance', ''):.3f}")
 
 
 if __name__ == "__main__":

@@ -21,6 +21,8 @@ class Settings:
     qwen_model: str
     embed_batch_size: int
     qwen_concurrency: int
+    groq_api_key: str | None
+    groq_summary_model: str
 
 
 def load_settings() -> Settings:
@@ -41,5 +43,7 @@ def load_settings() -> Settings:
         qwen_model=os.getenv("QWEN_MODEL", "qwen/qwen3-vl-32b-instruct"),
         embed_batch_size=int(os.getenv("EMBED_BATCH_SIZE", "32")),
         qwen_concurrency=int(os.getenv("QWEN_CONCURRENCY", "5")),
+        groq_api_key=os.getenv("GROQ_API_KEY"),
+        groq_summary_model=os.getenv("GROQ_SUMMARY_MODEL", "llama-3.3-70b-versatile"),
     )
 

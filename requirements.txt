@@ -28,5 +28,6 @@ together>=1.2.0
 numpy>=1.26.0
 python-dotenv>=1.0.0
 
-# Search UI
+# Search UI (summary uses Groq)
+groq>=0.4.0
 streamlit>=1.28.0
