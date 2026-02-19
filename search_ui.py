@@ -4,10 +4,11 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 import zipfile
 from pathlib import Path
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import lancedb
 import numpy as np
@@ -28,10 +29,72 @@ def _get_download_url() -> str | None:
         return None
 
 
+# Browser User-Agent so Google Drive doesn't block the request
+_UA = "Mozilla/5.0 (Windows NT 10.0; rv:91.0) Gecko/20100101 Firefox/91.0"
+
+
+def _resolve_google_drive_url(url: str) -> str:
+    """
+    If Google Drive returns HTML (virus scan / confirm page), parse it and return
+    the URL with the confirm token so the next request gets the actual file.
+    """
+    if "drive.google.com" not in url:
+        return url
+    mid = re.search(r"id=([0-9A-Za-z_.-]+)", url)
+    if not mid:
+        return url
+    file_id = mid.group(1)
+
+    req = Request(url, headers={"User-Agent": _UA})
+    with urlopen(req, timeout=30) as resp:
+        head = resp.read(64 * 1024)  # first 64 KB
+    # Zip files start with PK
+    if head.startswith(b"PK"):
+        return url
+    try:
+        body = head.decode("utf-8", errors="ignore")
+    except Exception:
+        return _usercontent_drive_url(file_id)
+    # Look for confirm token in Google's "virus scan" page
+    m = re.search(r"confirm=([^\"'\s&]+)", body)
+    if m:
+        token = m.group(1)
+        return f"https://drive.google.com/uc?export=download&id={file_id}&confirm={token}"
+    m = re.search(r"/uc\?export=download[^\"']*confirm=([^\"'\s&]+)", body)
+    if m:
+        return f"https://drive.google.com/uc?export=download&id={file_id}&confirm={m.group(1)}"
+    # Fallback: usercontent endpoint with confirm=t (often works for public files)
+    return _usercontent_drive_url(file_id)
+
+
+def _usercontent_drive_url(file_id: str) -> str:
+    """Alternative Drive download URL that sometimes bypasses virus scan."""
+    return f"https://drive.usercontent.google.com/download?export=download&confirm=t&id={file_id}"
+
+
+def _download_to_file(url: str, tmp_path: str, progress_callback=None) -> None:
+    """Download url to tmp_path, handling Google Drive confirm. progress_callback(total_mb) optional."""
+    url = _resolve_google_drive_url(url)
+    req = Request(url, headers={"User-Agent": _UA})
+    chunk_size = 1 << 20  # 1 MB
+    with urlopen(req, timeout=60) as resp:
+        with open(tmp_path, "wb") as out:
+            total = 0
+            while True:
+                chunk = resp.read(chunk_size)
+                if not chunk:
+                    break
+                out.write(chunk)
+                total += len(chunk)
+                if progress_callback:
+                    progress_callback(total // (1 << 20))
+
+
 def _ensure_lancedb(settings) -> bool:
     """
     If LanceDB dir is missing and LANCEDB_DOWNLOAD_URL is set, download zip and unzip.
     Zip must contain the table at top level (e.g. epstein_images.lance/).
+    Supports Google Drive (handles virus-scan confirm page).
     """
     table_lance = settings.lancedb_dir / f"{settings.table_name}.lance"
     if table_lance.exists():
@@ -47,20 +110,11 @@ def _ensure_lancedb(settings) -> bool:
             with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as f:
                 tmp = f.name
             try:
-                with urlopen(url) as resp:
-                    chunk_size = 1 << 20  # 1 MB
-                    total = 0
-                    progress = st.progress(0.0, text="Downloading...")
-                    while True:
-                        chunk = resp.read(chunk_size)
-                        if not chunk:
-                            break
-                        with open(tmp, "ab") as out:
-                            out.write(chunk)
-                        total += len(chunk)
-                        # Update progress (we don't know total size)
-                        progress.progress(min(1.0, total / (100 * chunk_size)), text=f"Downloaded {total // (1 << 20)} MB")
-                    progress.progress(1.0, text="Extracting...")
+                def on_progress(mb: int):
+                    st.progress(min(1.0, mb / 200.0), text=f"Downloaded {mb} MB")
+
+                _download_to_file(url, tmp, progress_callback=on_progress)
+                st.progress(1.0, text="Extracting...")
                 with zipfile.ZipFile(tmp, "r") as zf:
                     zf.extractall(settings.lancedb_dir)
             finally:
@@ -69,6 +123,9 @@ def _ensure_lancedb(settings) -> bool:
                 except Exception:
                     pass
             return True
+        except zipfile.BadZipFile as e:
+            st.error(f"Downloaded file is not a valid zip (often means Google Drive confirm failed): {e}")
+            return False
         except Exception as e:
             st.error(f"Failed to download database: {e}")
             return False
