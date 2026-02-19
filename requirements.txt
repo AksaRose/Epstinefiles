@@ -2,6 +2,7 @@
 requests>=2.28.0
 beautifulsoup4>=4.11.0
 lxml>=4.9.0
+playwright>=1.40.0
 
 # Optional: PDF to images for Vision Transformer (ViT)
 # Requires: pip install pymupdf (or use pdf2image + system Poppler)

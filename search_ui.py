@@ -86,10 +86,19 @@ def main():
                 if blob is not None and isinstance(blob, (bytes, bytearray)):
                     st.image(blob, use_container_width=True)
                 st.markdown(f"**{row.get('source_file', '')}** p.{row.get('page_no', '')}")
-                celebs = row.get("celebrities") or []
+                _celeb = row.get("celebrities")
+                if _celeb is None:
+                    celebs = []
+                elif isinstance(_celeb, np.ndarray):
+                    celebs = _celeb.tolist()
+                elif isinstance(_celeb, (list, tuple)):
+                    celebs = list(_celeb)
+                else:
+                    celebs = [_celeb] if _celeb is not None else []
                 if celebs:
-                    st.caption(f"People: {', '.join(celebs)}")
-                cap = row.get("caption") or ""
+                    st.caption(f"People: {', '.join(str(c) for c in celebs)}")
+                cap = row.get("caption")
+                cap = "" if cap is None else str(cap)
                 if cap:
                     st.caption(cap[:200] + ("..." if len(cap) > 200 else ""))
                 st.caption(f"Dataset {row.get('dataset_id', '')} · distance {row.get('_distance', ''):.3f}")
