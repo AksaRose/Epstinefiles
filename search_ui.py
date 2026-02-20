@@ -401,8 +401,11 @@ def main():
         st.error("Set TOGETHER_API_KEY in .env to run search (embedding the query).")
         return
 
-    with st.spinner("Analyzing query..."):
+    groq_configured = bool(getattr(settings, "groq_api_key", None) or os.environ.get("GROQ_API_KEY"))
+    with st.spinner("Analyzing query..." if groq_configured else "Preparing search..."):
         intent, search_query = _analyze_query(query, settings)
+    if not groq_configured:
+        st.caption("Query analysis unavailable (set GROQ_API_KEY in .env for intent detection and summaries).")
     # If the user query mentions a known person (from my_db / face recognition), filter to those rows
     known_people = _get_known_people()
     mentioned_people = _detect_mentioned_people(query.strip(), known_people)
