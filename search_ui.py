@@ -407,7 +407,7 @@ def main():
     known_people = _get_known_people()
     mentioned_people = _detect_mentioned_people(query.strip(), known_people)
     if mentioned_people:
-        st.info(f"Filtering to images where **{', '.join(mentioned_people)}** was identified (face recognition).")
+        st.info(f"Filtering to images where **{', '.join(n.replace('_', ' ') for n in mentioned_people)}** was identified (face recognition).")
     with st.spinner("Searching..."):
         try:
             results = search(
@@ -449,17 +449,9 @@ def main():
                 if blob is not None and isinstance(blob, (bytes, bytearray)):
                     st.image(blob, use_container_width=True)
                 st.markdown(f"**{row.get('source_file', '')}** p.{row.get('page_no', '')}")
-                # Distance or relevance (hybrid returns _relevance_score, vector-only often _distance)
-                score = row.get("_relevance_score") if "_relevance_score" in row else row.get("_distance")
-                if score is not None:
-                    if "_relevance_score" in row:
-                        st.caption(f"Relevance: {float(score):.4f}")
-                    else:
-                        st.caption(f"Distance: {float(score):.4f}")
-                # Caption
+                # Caption (no heading)
                 cap = row.get("caption")
                 if cap is not None and str(cap).strip():
-                    st.markdown("**Caption:**")
                     st.caption(str(cap).strip())
                 # People present (from face recognition); may be list or numpy array from LanceDB
                 celebs = row.get("celebrities")
@@ -467,9 +459,9 @@ def main():
                     try:
                         names = [str(x).strip() for x in celebs if x is not None and str(x).strip()]
                         if names:
-                            st.markdown("**People present:** " + ", ".join(names))
+                            st.caption(", ".join(n.replace("_", " ") for n in names))
                     except (TypeError, ValueError):
-                        st.markdown("**People present:** " + str(celebs))
+                        st.caption(str(celebs))
 
 
 if __name__ == "__main__":
