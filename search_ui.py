@@ -407,7 +407,8 @@ def main():
     known_people = _get_known_people()
     mentioned_people = _detect_mentioned_people(query.strip(), known_people)
     if mentioned_people:
-        st.info(f"Filtering to images where **{', '.join(n.replace('_', ' ') for n in mentioned_people)}** was identified (face recognition).")
+        display_names = [n.replace("_", " ") for n in mentioned_people]
+        st.info(f"Filtering to images where **{', '.join(display_names)}** was identified (face recognition).")
     with st.spinner("Searching..."):
         try:
             results = search(
@@ -461,7 +462,7 @@ def main():
                         if names:
                             st.caption(", ".join(n.replace("_", " ") for n in names))
                     except (TypeError, ValueError):
-                        st.caption(str(celebs))
+                        st.caption(str(celebs).replace("_", " "))
 
 
 if __name__ == "__main__":
