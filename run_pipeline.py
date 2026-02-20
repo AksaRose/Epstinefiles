@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -54,7 +55,12 @@ def process_chunk(
     image_bytes_map: Dict[Path, bytes] = {}
     for item in chunk:
         path: Path = item["image_path"]
-        result, img_bytes = analyze_image(path, faces_db_dir=settings.faces_db_dir)
+        result, img_bytes = analyze_image(
+            path,
+            faces_db_dir=settings.faces_db_dir,
+            distance_threshold=settings.face_distance_threshold,
+            backend=settings.face_backend,
+        )
         face_results[path] = result
         image_bytes_map[path] = img_bytes
 
@@ -71,6 +77,7 @@ def process_chunk(
                 celebrity_names=face.celebrities,
                 api_key=settings.together_api_key,
                 model=settings.qwen_model,
+                max_tokens=settings.caption_max_tokens,
             )
             fut_to_path[fut] = path
 
@@ -82,7 +89,7 @@ def process_chunk(
                 LOG.warning("Caption failed for %s: %s", path, e)
                 captions[path] = ""
 
-    # Step 3: prepare texts for embedding
+    # Step 3: prepare texts for embedding (caption from LLM; people only from InsightFace)
     texts: List[str] = []
     for item in chunk:
         path: Path = item["image_path"]
@@ -90,9 +97,9 @@ def process_chunk(
         caption = captions.get(path, "").strip()
         if face.celebrities:
             celeb_part = ", ".join(face.celebrities)
-            full = f"{caption} (Celebrities: {celeb_part})" if caption else f"Celebrities: {celeb_part}"
+            full = f"{caption} (People identified: {celeb_part})" if caption else f"People identified: {celeb_part}"
         else:
-            full = caption or "Image from Epstein case file."
+            full = caption or "Document image."
         texts.append(full)
 
     # Step 4: batch embed
@@ -110,6 +117,9 @@ def process_chunk(
         vec = vectors[idx]
         img_bytes = image_bytes_map[path]
         row_id = f"dataset_{item['dataset_id']}/{path.stem}"
+        # searchable_text = caption + celebrity names for keyword/FTS in hybrid search
+        celeb_part = " ".join(face.celebrities) if face.celebrities else ""
+        searchable_text = f"{caption} {celeb_part}".strip() or ""
         rows.append(
             {
                 "id": row_id,
@@ -121,6 +131,7 @@ def process_chunk(
                 "caption": caption,
                 "celebrities": face.celebrities,
                 "has_faces": bool(face.has_faces),
+                "searchable_text": searchable_text,
                 "vector": vec,
             }
         )
@@ -129,6 +140,10 @@ def process_chunk(
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Index images: face recognition (InsightFace), caption (Qwen), embed, write to LanceDB.")
+    parser.add_argument("--overwrite", action="store_true", help="Replace existing table (clear and re-index from scratch)")
+    args = parser.parse_args()
+
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     settings = load_settings()
     LOG.info("Using images base dir: %s", settings.images_base_dir)
@@ -146,7 +161,7 @@ def main() -> int:
         model=settings.embed_model,
     )[0]
     vector_dim = len(probe_vec)
-    table = get_or_create_table(settings.lancedb_dir, settings.table_name, vector_dim)
+    table = get_or_create_table(settings.lancedb_dir, settings.table_name, vector_dim, overwrite=args.overwrite)
 
     batch_size = settings.embed_batch_size
     for i in range(0, len(items), batch_size):
@@ -154,6 +169,13 @@ def main() -> int:
         LOG.info("Processing images %d-%d", i + 1, min(len(items), i + batch_size))
         rows = process_chunk(chunk, settings)
         write_batch(table, rows)
+
+    # Build FTS index on searchable_text (caption + celebrity names) for hybrid search (vector + keyword/BM25)
+    try:
+        table.create_fts_index("searchable_text")
+        LOG.info("FTS index on 'searchable_text' created for hybrid search.")
+    except Exception as e:
+        LOG.warning("Could not create FTS index (hybrid search may be vector-only): %s", e)
 
     LOG.info("Done.")
     return 0

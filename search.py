@@ -40,11 +40,20 @@ def main() -> int:
     db = lancedb.connect(str(settings.lancedb_dir))
     table = db.open_table(settings.table_name)
 
-    results = (
-        table.search(np.array(vec, dtype="float32"))
-        .limit(args.k)
-        .to_pandas()
-    )
+    vec_arr = np.array(vec, dtype="float32")
+    try:
+        q = (
+            table.search(query_type="hybrid", vector_column_name="vector")
+            .vector(vec_arr)
+            .text(args.query)
+        )
+        results = q.limit(args.k).to_pandas()
+    except Exception:
+        results = (
+            table.search(vec_arr)
+            .limit(args.k)
+            .to_pandas()
+        )
 
     if results.empty:
         LOG.info("No results.")

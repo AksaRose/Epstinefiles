@@ -19,6 +19,41 @@ from config import load_settings
 from pipeline.embed import embed_query
 
 
+@st.cache_resource
+def _get_known_people():
+    """Known person names (my_db folder names) used for face recognition at ingestion."""
+    settings = load_settings()
+    if not settings.faces_db_dir.is_dir():
+        return []
+    return [p.name for p in sorted(settings.faces_db_dir.iterdir()) if p.is_dir()]
+
+
+def _detect_mentioned_people(query: str, known_people: list[str]) -> list[str]:
+    """Return known person names that appear in the query or whose name contains the query (case-insensitive).
+    E.g. 'trump' matches 'Donald Trump', and 'Donald Trump' matches 'photos of Donald Trump'.
+    """
+    if not query or not known_people:
+        return []
+    q = query.strip().lower()
+    if not q:
+        return []
+    return [
+        name
+        for name in known_people
+        if name.lower() in q or q in name.lower()
+    ]
+
+
+def _person_filter_where(person_names: list[str]) -> str:
+    """Build LanceDB .where() predicate: celebrities list contains any of these names."""
+    if not person_names:
+        return ""
+    # Escape single quotes in names for SQL literal
+    escaped = [n.replace("'", "''") for n in person_names]
+    literals = ", ".join(f"'{e}'" for e in escaped)
+    return f"array_has_any(celebrities, [{literals}])"
+
+
 def _get_download_url() -> str | None:
     """LANCEDB_DOWNLOAD_URL from env or Streamlit secrets (for cloud deploy)."""
     url = os.environ.get("LANCEDB_DOWNLOAD_URL")
@@ -174,7 +209,7 @@ def _analyze_query(user_query: str, settings) -> tuple[str, str]:
         f"User input: \"{user_query.strip()}\"\n\n"
         "Reply with exactly two lines:\n"
         "Line 1: Either QUESTION or KEYWORD (whether the user asked a question or is searching by topic/keywords).\n"
-        "Line 2: A short search query (keywords or key phrases) that would best find relevant images. For questions, turn the question into search keywords (e.g. \"Who was at the party?\" -> \"party, people, guests, gathering\"). For keyword search, use or lightly expand the user's words. Keep line 2 under 15 words."
+        "Line 2: A short search query (keywords or key phrases) that would best find relevant images. For questions, turn the question into search keywords (e.g. \"Who was at the party?\" -> \"party, people, guests, gathering\"). For keyword search, use or lightly expand the user's words. Do not add specific names or places the user did not mention. Keep line 2 under 15 words."
     )
     try:
         client = Groq(api_key=groq_key)
@@ -182,6 +217,7 @@ def _analyze_query(user_query: str, settings) -> tuple[str, str]:
             model=model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=80,
+            temperature=0,
         )
         text = (resp.choices[0].message.content or "").strip()
         lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
@@ -217,8 +253,8 @@ def _summarize_results(query: str, captions: list[str], settings) -> str | None:
         f"{numbered}\n\n"
         "Based only on these captions, write a short, neutral answer (2–4 sentences) that speaks directly to the user's query. "
         "If the captions do not provide enough information to fully answer the query, say that clearly and instead describe what "
-        "the images do show that is relevant. Do not speculate or introduce people, places, or events that are not mentioned in "
-        "the captions."
+        "the images do show that is relevant. Do not speculate, infer, or introduce people, places, or events that are not "
+        "explicitly mentioned in the captions. Do not hallucinate; when uncertain, say so."
     )
 
     try:
@@ -226,6 +262,7 @@ def _summarize_results(query: str, captions: list[str], settings) -> str | None:
             model=model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=220,
+            temperature=0,
         )
     except Exception:
         return None
@@ -248,7 +285,12 @@ def get_table():
     return db.open_table(settings.table_name), settings
 
 
-def search(query: str, k: int = 12, dataset_id: int | None = None):
+def search(
+    query: str,
+    k: int = 12,
+    dataset_id: int | None = None,
+    person_filter: list[str] | None = None,
+):
     settings = load_settings()
     table, _ = get_table()
     vec = embed_query(
@@ -256,9 +298,21 @@ def search(query: str, k: int = 12, dataset_id: int | None = None):
         api_key=settings.together_api_key,
         model=settings.embed_model,
     )
-    q = table.search(np.array(vec, dtype="float32"))
+    vec_arr = np.array(vec, dtype="float32")
+    try:
+        q = (
+            table.search(query_type="hybrid", vector_column_name="vector")
+            .vector(vec_arr)
+            .text(query)
+        )
+    except Exception:
+        q = table.search(vec_arr)
     if dataset_id is not None:
         q = q.where(f"dataset_id = {int(dataset_id)}")
+    if person_filter:
+        where_expr = _person_filter_where(person_filter)
+        if where_expr:
+            q = q.where(where_expr)
     results = q.limit(k).to_pandas()
     return results
 
@@ -349,9 +403,19 @@ def main():
 
     with st.spinner("Analyzing query..."):
         intent, search_query = _analyze_query(query, settings)
+    # If the user query mentions a known person (from my_db / face recognition), filter to those rows
+    known_people = _get_known_people()
+    mentioned_people = _detect_mentioned_people(query.strip(), known_people)
+    if mentioned_people:
+        st.info(f"Filtering to images where **{', '.join(mentioned_people)}** was identified (face recognition).")
     with st.spinner("Searching..."):
         try:
-            results = search(search_query, k=k, dataset_id=dataset_id)
+            results = search(
+                search_query,
+                k=k,
+                dataset_id=dataset_id,
+                person_filter=mentioned_people if mentioned_people else None,
+            )
         except Exception as e:
             st.exception(e)
             return
@@ -385,6 +449,27 @@ def main():
                 if blob is not None and isinstance(blob, (bytes, bytearray)):
                     st.image(blob, use_container_width=True)
                 st.markdown(f"**{row.get('source_file', '')}** p.{row.get('page_no', '')}")
+                # Distance or relevance (hybrid returns _relevance_score, vector-only often _distance)
+                score = row.get("_relevance_score") if "_relevance_score" in row else row.get("_distance")
+                if score is not None:
+                    if "_relevance_score" in row:
+                        st.caption(f"Relevance: {float(score):.4f}")
+                    else:
+                        st.caption(f"Distance: {float(score):.4f}")
+                # Caption
+                cap = row.get("caption")
+                if cap is not None and str(cap).strip():
+                    st.markdown("**Caption:**")
+                    st.caption(str(cap).strip())
+                # People present (from face recognition); may be list or numpy array from LanceDB
+                celebs = row.get("celebrities")
+                if celebs is not None:
+                    try:
+                        names = [str(x).strip() for x in celebs if x is not None and str(x).strip()]
+                        if names:
+                            st.markdown("**People present:** " + ", ".join(names))
+                    except (TypeError, ValueError):
+                        st.markdown("**People present:** " + str(celebs))
 
 
 if __name__ == "__main__":

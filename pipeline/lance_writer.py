@@ -25,13 +25,16 @@ def _schema(vector_dim: int) -> pa.Schema:
             pa.field("caption", pa.string()),
             pa.field("celebrities", pa.list_(pa.string())),
             pa.field("has_faces", pa.bool_()),
+            pa.field("searchable_text", pa.string()),  # caption + celebrity names for FTS/hybrid search
             pa.field("vector", pa.list_(pa.float32(), vector_dim)),
         ]
     )
 
 
-def get_or_create_table(db_path: Path, table_name: str, vector_dim: int):
+def get_or_create_table(db_path: Path, table_name: str, vector_dim: int, overwrite: bool = False):
     db = get_db(db_path)
+    if overwrite and table_name in db.table_names():
+        db.drop_table(table_name)
     if table_name in db.table_names():
         return db.open_table(table_name)
     # Create empty table with schema

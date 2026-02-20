@@ -16,6 +16,9 @@ opencv-python-headless>=4.9.0.0
 deepface>=0.0.79
 # Required by DeepFace's RetinaFace when TensorFlow 2.20+ is present
 tf-keras>=2.20.0
+# Optional: better accuracy; use --backend insightface in pipeline/face_detect.py
+# insightface>=0.7.0
+# onnxruntime>=1.14.0
 
 # Vector store and schema
 lancedb>=0.9.0
