@@ -22,10 +22,11 @@ if "--fts-only" in sys.argv:
         _settings = load_settings()
         import lancedb
         _db = lancedb.connect(str(_settings.lancedb_dir))
-        if _settings.table_name not in _db.list_tables():
-            logging.error("Table %s does not exist. Run the pipeline first.", _settings.table_name)
+        try:
+            _table = _db.open_table(_settings.table_name)
+        except Exception as e:
+            logging.error("Cannot open table %s (run the pipeline first): %s", _settings.table_name, e)
             os._exit(1)
-        _table = _db.open_table(_settings.table_name)
         try:
             _table.create_fts_index("searchable_text", replace=True, with_position=True, remove_stop_words=False)
             logging.info("FTS index on 'searchable_text' rebuilt (phrase queries enabled). Hybrid search will include all rows.")
