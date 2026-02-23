@@ -1,0 +1,9 @@
+# Streamlit config (used when running the app).
+# On a VPS behind nginx: bind to localhost so nginx can proxy; avoids "Name or service not known" on some hosts.
+# Use port 8502 if 8501 is occupied by another service.
+[server]
+address = "127.0.0.1"
+port = 8502
+
+[browser]
+gatherUsageStats = false

@@ -16,6 +16,7 @@ import streamlit as st
 from groq import Groq
 
 from config import load_settings
+from chroma_rag import description_from_chroma
 from pipeline.embed import embed_query
 
 
@@ -463,19 +464,24 @@ def main():
         st.warning("No results.")
         return
 
-    # High-level Groq summary: use original query so the answer matches what the user asked
-    captions_for_summary: list[str] = []
-    if "caption" in results.columns:
-        for c in results["caption"].tolist():
-            if c is None:
-                continue
-            s = str(c).strip()
-            if s:
-                captions_for_summary.append(s)
-    summary = _summarize_results(query, captions_for_summary, settings)
-    if summary:
-        st.subheader("Summary of results")
-        st.markdown(summary)
+    # Description from Chroma text RAG (Epstein Files 20K docs); fallback to caption-based summary if Chroma not used
+    chroma_desc = description_from_chroma(query)
+    if chroma_desc:
+        st.subheader("Description")
+        st.markdown(chroma_desc)
+    else:
+        captions_for_summary: list[str] = []
+        if "caption" in results.columns:
+            for c in results["caption"].tolist():
+                if c is None:
+                    continue
+                s = str(c).strip()
+                if s:
+                    captions_for_summary.append(s)
+        summary = _summarize_results(query, captions_for_summary, settings)
+        if summary:
+            st.subheader("Summary of results")
+            st.markdown(summary)
 
     # Grid of results: 3 per row
     ncols = 3

@@ -16,6 +16,8 @@ class Settings:
     lancedb_dir: Path
     table_name: str
     faces_db_dir: Path
+    chroma_dir: Path | None  # Local path to Chroma DB (Epstein text RAG); None = disabled
+    chroma_hf_dataset: str | None  # If set, download this HF dataset and use its chroma_db/
     face_backend: str  # "insightface" (buffalo_l) or "deepface"
     face_distance_threshold: float  # max cosine distance to accept a match (e.g. 0.8)
     together_api_key: str | None
@@ -34,6 +36,9 @@ def load_settings() -> Settings:
     images_base = base_dir
     lancedb_dir = Path(os.getenv("LANCEDB_DIR", cwd / "lancedb"))
     faces_db_dir = Path(os.getenv("FACES_DB_DIR", cwd / "my_db"))
+    chroma_dir_env = os.getenv("CHROMA_DIR")
+    chroma_dir = Path(chroma_dir_env) if chroma_dir_env else None
+    chroma_hf_dataset = os.getenv("CHROMA_HF_DATASET") or None  # e.g. devankit7873/EpsteinFiles-Vector-Embeddings-ChromaDB
 
     return Settings(
         base_dir=base_dir,
@@ -41,6 +46,8 @@ def load_settings() -> Settings:
         lancedb_dir=lancedb_dir,
         table_name=os.getenv("LANCEDB_TABLE", "epstein_images"),
         faces_db_dir=faces_db_dir,
+        chroma_dir=chroma_dir,
+        chroma_hf_dataset=chroma_hf_dataset,
         face_backend=os.getenv("FACE_BACKEND", "insightface"),
         face_distance_threshold=float(os.getenv("FACE_DISTANCE_THRESHOLD", "0.8")),
         together_api_key=os.getenv("TOGETHER_API_KEY"),
