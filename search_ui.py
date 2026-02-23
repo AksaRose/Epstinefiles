@@ -507,10 +507,10 @@ def main():
     if chroma_desc:
         st.subheader("Description")
         st.markdown(chroma_desc)
-        # One-liner about the images below + disclaimer that they may not always match the query
+        # One-liner about the images (ordinary sentence, no label)
         oneliner = _images_oneliner(captions_for_summary, settings)
         if oneliner:
-            st.caption(f"**Images below:** {oneliner}")
+            st.markdown(oneliner)
         st.caption("*Note: shown images may not always be directly related to your query.*")
     else:
         summary = _summarize_results(query, captions_for_summary, settings)

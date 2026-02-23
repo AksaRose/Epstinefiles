@@ -93,11 +93,11 @@ def description_from_chroma(query: str, max_tokens: int = 280) -> str | None:
     client = Groq(api_key=groq_key)
     context = "\n\n".join(chunks[:6])
     prompt = (
-        "You are answering based only on the following excerpts from Epstein case documents.\n\n"
-        f"Excerpts:\n{context}\n\n"
+        "You are answering based only on the following text from Epstein case files (OCR from released documents).\n\n"
+        f"From the files:\n{context}\n\n"
         f"User query: {query}\n\n"
-        "Write a short paragraph of 3 to 4 sentences that directly answers the query using only the excerpts. "
-        "Do not speculate or add information not in the excerpts. If the excerpts do not answer the query, say so clearly."
+        "Write a short paragraph of 3 to 4 sentences that directly answers the query using only the files above. "
+        "Do not speculate or add information not in the files. If the files do not answer the query, say so clearly. Refer to the source as 'the files' or 'these files', not 'excerpts'."
     )
     try:
         resp = client.chat.completions.create(
