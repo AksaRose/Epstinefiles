@@ -75,9 +75,9 @@ def get_chroma_chunks(query: str, k: int = CHROMA_QUERY_K, fetch_k: int = CHROMA
         return []
 
 
-def description_from_chroma(query: str, max_tokens: int = 120) -> str | None:
+def description_from_chroma(query: str, max_tokens: int = 280) -> str | None:
     """
-    Query Chroma for relevant document chunks and use Groq to produce a one- or two-line
+    Query Chroma for relevant document chunks and use Groq to produce a 3–4 sentence
     description answering the query. Returns None if Chroma or Groq is unavailable.
     """
     chunks = get_chroma_chunks(query, k=CHROMA_QUERY_K, fetch_k=CHROMA_FETCH_K)
@@ -96,8 +96,8 @@ def description_from_chroma(query: str, max_tokens: int = 120) -> str | None:
         "You are answering based only on the following excerpts from Epstein case documents.\n\n"
         f"Excerpts:\n{context}\n\n"
         f"User query: {query}\n\n"
-        "Write a single short paragraph (one or two sentences) that directly answers the query using only the excerpts. "
-        "Do not speculate or add information not in the excerpts. If the excerpts do not answer the query, say so briefly."
+        "Write a short paragraph of 3 to 4 sentences that directly answers the query using only the excerpts. "
+        "Do not speculate or add information not in the excerpts. If the excerpts do not answer the query, say so clearly."
     )
     try:
         resp = client.chat.completions.create(

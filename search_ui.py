@@ -295,6 +295,34 @@ def _summarize_results(query: str, captions: list[str], settings) -> str | None:
     return cleaned or None
 
 
+def _images_oneliner(captions: list[str], settings) -> str | None:
+    """One sentence describing what the shown images are (from captions). Used below Chroma description."""
+    if not captions:
+        return None
+    groq_key = getattr(settings, "groq_api_key", None) or os.environ.get("GROQ_API_KEY")
+    if not groq_key:
+        return None
+    model = getattr(settings, "groq_summary_model", None) or os.environ.get("GROQ_SUMMARY_MODEL", "llama-3.3-70b-versatile")
+    client = Groq(api_key=groq_key)
+    top = "\n".join(captions[: min(8, len(captions))])
+    prompt = (
+        "These are captions of search result images from DOJ Epstein materials.\n\n"
+        f"{top}\n\n"
+        "Reply with exactly one short sentence (no period at the end if you prefer) that describes what these images show in general. Do not answer any user question; only describe the images."
+    )
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=60,
+            temperature=0,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        return text.rstrip(".") or None
+    except Exception:
+        return None
+
+
 @st.cache_resource
 def get_table():
     settings = load_settings()
@@ -464,20 +492,27 @@ def main():
         st.warning("No results.")
         return
 
+    # Captions for any summary / one-liner about images
+    captions_for_summary: list[str] = []
+    if "caption" in results.columns:
+        for c in results["caption"].tolist():
+            if c is None:
+                continue
+            s = str(c).strip()
+            if s:
+                captions_for_summary.append(s)
+
     # Description from Chroma text RAG (Epstein Files 20K docs); fallback to caption-based summary if Chroma not used
     chroma_desc = description_from_chroma(query)
     if chroma_desc:
         st.subheader("Description")
         st.markdown(chroma_desc)
+        # One-liner about the images below + disclaimer that they may not always match the query
+        oneliner = _images_oneliner(captions_for_summary, settings)
+        if oneliner:
+            st.caption(f"**Images below:** {oneliner}")
+        st.caption("*Note: shown images may not always be directly related to your query.*")
     else:
-        captions_for_summary: list[str] = []
-        if "caption" in results.columns:
-            for c in results["caption"].tolist():
-                if c is None:
-                    continue
-                s = str(c).strip()
-                if s:
-                    captions_for_summary.append(s)
         summary = _summarize_results(query, captions_for_summary, settings)
         if summary:
             st.subheader("Summary of results")
