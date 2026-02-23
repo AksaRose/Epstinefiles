@@ -4,13 +4,36 @@ from __future__ import annotations
 import argparse
 import logging
 import re
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Set
 
-import lancedb
-
 from config import load_settings
+
+# --fts-only: rebuild FTS index only (no cv2/opencv needed; avoids libGL on headless servers)
+if "--fts-only" in sys.argv:
+    _parser = argparse.ArgumentParser()
+    _parser.add_argument("--fts-only", action="store_true")
+    _args, _ = _parser.parse_known_args()
+    if _args.fts_only:
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+        _settings = load_settings()
+        import lancedb
+        _db = lancedb.connect(str(_settings.lancedb_dir))
+        if _settings.table_name not in _db.table_names():
+            logging.error("Table %s does not exist. Run the pipeline first.", _settings.table_name)
+            sys.exit(1)
+        _table = _db.open_table(_settings.table_name)
+        try:
+            _table.create_fts_index("searchable_text", replace=True, with_position=True, remove_stop_words=False)
+            logging.info("FTS index on 'searchable_text' rebuilt (phrase queries enabled). Hybrid search will include all rows.")
+        except Exception as e:
+            logging.exception("Could not create FTS index: %s", e)
+            sys.exit(1)
+        sys.exit(0)
+
+import lancedb
 from pipeline.caption import caption_image
 from pipeline.embed import embed_texts
 from pipeline.face_detect import FaceAnalysisResult, analyze_image
@@ -198,20 +221,6 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     settings = load_settings()
 
-    if args.fts_only:
-        db = lancedb.connect(str(settings.lancedb_dir))
-        if settings.table_name not in db.table_names():
-            LOG.error("Table %s does not exist. Run the pipeline first.", settings.table_name)
-            return 1
-        table = db.open_table(settings.table_name)
-        try:
-            table.create_fts_index("searchable_text", replace=True)
-            LOG.info("FTS index on 'searchable_text' rebuilt. Hybrid search will include all rows.")
-        except Exception as e:
-            LOG.exception("Could not create FTS index: %s", e)
-            return 1
-        return 0
-
     if args.images_dir is not None:
         img_dir = args.images_dir.resolve()
         if not img_dir.is_dir():
@@ -290,9 +299,10 @@ def main() -> int:
         write_batch(table, rows)
 
     # Build or rebuild FTS index on searchable_text (caption + celebrity names) for hybrid search (vector + keyword/BM25)
+    # with_position=True required for phrase queries (e.g. "donald trump")
     try:
-        table.create_fts_index("searchable_text", replace=True)
-        LOG.info("FTS index on 'searchable_text' created/updated for hybrid search.")
+        table.create_fts_index("searchable_text", replace=True, with_position=True, remove_stop_words=False)
+        LOG.info("FTS index on 'searchable_text' created/updated for hybrid search (phrase queries enabled).")
     except Exception as e:
         LOG.warning("Could not create FTS index (hybrid search may be vector-only): %s", e)
 
