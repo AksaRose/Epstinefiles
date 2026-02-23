@@ -6,7 +6,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load .env from project root (directory containing config.py) so it works when cwd differs (e.g. systemd/Streamlit)
+_project_root = Path(__file__).resolve().parent
+load_dotenv(_project_root / ".env")
 
 
 @dataclass
