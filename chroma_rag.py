@@ -109,9 +109,11 @@ def description_from_chroma(query: str, max_tokens: int = 280) -> str | None:
     if not chunks:
         return None
 
+    print(f"Chroma: got {len(chunks)} chunks", file=sys.stderr, flush=True)
     settings = load_settings()
     groq_key = getattr(settings, "groq_api_key", None) or os.environ.get("GROQ_API_KEY")
     if not groq_key:
+        print("Chroma: GROQ_API_KEY not set, cannot generate description", file=sys.stderr, flush=True)
         return None
 
     model = getattr(settings, "groq_summary_model", None) or os.environ.get("GROQ_SUMMARY_MODEL", "llama-3.3-70b-versatile")
@@ -133,5 +135,6 @@ def description_from_chroma(query: str, max_tokens: int = 280) -> str | None:
         )
         text = (resp.choices[0].message.content or "").strip()
         return text or None
-    except Exception:
+    except Exception as e:
+        print(f"Chroma: Groq API failed: {e}", file=sys.stderr, flush=True)
         return None
