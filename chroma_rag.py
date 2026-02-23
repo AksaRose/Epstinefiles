@@ -89,7 +89,9 @@ def get_chroma_chunks(query: str, k: int = CHROMA_QUERY_K, fetch_k: int = CHROMA
                 if doc and isinstance(doc, str) and doc.strip():
                     texts.append(doc.strip())
         if not texts:
-            LOG.warning("Chroma: query returned 0 chunks from %s", base_str)
+            msg = f"Chroma: query returned 0 chunks from {base_str}"
+            LOG.warning(msg)
+            print(msg, file=sys.stderr, flush=True)
         return texts
     except Exception as e:
         msg = f"Chroma: query failed: {e}"
