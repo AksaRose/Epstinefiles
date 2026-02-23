@@ -92,7 +92,9 @@ def get_chroma_chunks(query: str, k: int = CHROMA_QUERY_K, fetch_k: int = CHROMA
             LOG.warning("Chroma: query returned 0 chunks from %s", base_str)
         return texts
     except Exception as e:
-        LOG.warning("Chroma: query failed: %s", e)
+        msg = f"Chroma: query failed: {e}"
+        LOG.warning(msg)
+        print(msg, file=sys.stderr, flush=True)
         return []
 
 

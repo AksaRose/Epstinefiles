@@ -533,7 +533,7 @@ def main():
             with cols[i]:
                 blob = row.get("image_blob")
                 if blob is not None and isinstance(blob, (bytes, bytearray)):
-                    st.image(blob, use_container_width=True)
+                    st.image(blob, width="stretch")
                 st.markdown(f"**{row.get('source_file', '')}** p.{row.get('page_no', '')}")
                 # Caption (no heading); empty = caption step failed during pipeline (API/timeout)
                 cap = row.get("caption")
