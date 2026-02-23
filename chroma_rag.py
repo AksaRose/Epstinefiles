@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import List
 
@@ -57,6 +58,14 @@ def get_chroma_chunks(query: str, k: int = CHROMA_QUERY_K, fetch_k: int = CHROMA
     settings = load_settings()
     base = _chroma_base_dir(settings)
     if not base:
+        # Log why Chroma wasn't used (stderr so it shows in systemd journalctl)
+        env_val = os.environ.get("CHROMA_DIR")
+        msg = (
+            f"Chroma: no base dir. CHROMA_DIR env={repr(env_val)}, "
+            f"settings.chroma_dir={getattr(settings, 'chroma_dir', None)}"
+        )
+        LOG.warning(msg)
+        print(msg, file=sys.stderr, flush=True)
         return []
 
     base_str = str(base.resolve())
