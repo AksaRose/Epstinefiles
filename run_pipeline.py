@@ -13,6 +13,7 @@ from config import load_settings
 
 # --fts-only: rebuild FTS index only (no cv2/opencv needed; avoids libGL on headless servers)
 if "--fts-only" in sys.argv:
+    import os
     _parser = argparse.ArgumentParser()
     _parser.add_argument("--fts-only", action="store_true")
     _args, _ = _parser.parse_known_args()
@@ -21,17 +22,17 @@ if "--fts-only" in sys.argv:
         _settings = load_settings()
         import lancedb
         _db = lancedb.connect(str(_settings.lancedb_dir))
-        if _settings.table_name not in _db.table_names():
+        if _settings.table_name not in _db.list_tables():
             logging.error("Table %s does not exist. Run the pipeline first.", _settings.table_name)
-            sys.exit(1)
+            os._exit(1)
         _table = _db.open_table(_settings.table_name)
         try:
             _table.create_fts_index("searchable_text", replace=True, with_position=True, remove_stop_words=False)
             logging.info("FTS index on 'searchable_text' rebuilt (phrase queries enabled). Hybrid search will include all rows.")
         except Exception as e:
             logging.exception("Could not create FTS index: %s", e)
-            sys.exit(1)
-        sys.exit(0)
+            os._exit(1)
+        os._exit(0)
 
 import lancedb
 from pipeline.caption import caption_image
