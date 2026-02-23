@@ -58,6 +58,31 @@ python pdf_to_images.py
 
 Then point your ViT dataloader at the `dataset_*_images/` folders (one image per page).
 
+## Running the pipeline on dataset 2 (or any dataset)
+
+To index **dataset 2** (or any dataset) with face recognition, captions, and search:
+
+1. **Put PDFs in the right folder**  
+   Place dataset 2 PDFs under `epstein_pdfs/dataset_2/` (or set `EPSTEIN_PDFS_DIR` in `.env` to your base dir).
+
+2. **Convert PDFs to images**  
+   From the project root:
+   ```bash
+   python pdf_to_images.py
+   ```
+   This writes PNGs to `epstein_pdfs/dataset_2_images/` (only dataset dirs that exist are processed).
+
+3. **Run the pipeline**  
+   ```bash
+   python run_pipeline.py
+   ```
+   The pipeline discovers all `dataset_*_images/` folders (1–5) and processes every `*_page*.png` it finds. To replace the existing index and re-index everything (including dataset 2), use:
+   ```bash
+   python run_pipeline.py --overwrite
+   ```
+
+Requires `.env` with `TOGETHER_API_KEY` (embeddings + captions). Face recognition uses `my_db/` (see pipeline docs).
+
 ## Layout
 
 After downloading and (optionally) rendering to images:

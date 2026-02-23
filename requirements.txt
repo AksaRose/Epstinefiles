@@ -10,6 +10,7 @@ pymupdf>=1.23.0
 
 # Image processing and CV
 Pillow>=10.0.0
+pillow-heif>=0.21.0
 opencv-python-headless>=4.9.0.0
 
 # Face recognition (local, no C++ build)

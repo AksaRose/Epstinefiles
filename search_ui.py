@@ -30,17 +30,17 @@ def _get_known_people():
 
 def _detect_mentioned_people(query: str, known_people: list[str]) -> list[str]:
     """Return known person names that appear in the query or whose name contains the query (case-insensitive).
-    E.g. 'trump' matches 'Donald Trump', and 'Donald Trump' matches 'photos of Donald Trump'.
+    Treats spaces and underscores as equivalent so 'bill gates' matches folder 'Bill_Gates'.
     """
     if not query or not known_people:
         return []
-    q = query.strip().lower()
+    q = query.strip().lower().replace("_", " ")
     if not q:
         return []
     return [
         name
         for name in known_people
-        if name.lower() in q or q in name.lower()
+        if name.lower().replace("_", " ") in q or q in name.lower().replace("_", " ")
     ]
 
 
@@ -52,6 +52,27 @@ def _person_filter_where(person_names: list[str]) -> str:
     escaped = [n.replace("'", "''") for n in person_names]
     literals = ", ".join(f"'{e}'" for e in escaped)
     return f"array_has_any(celebrities, [{literals}])"
+
+
+def _row_has_any_person(row, person_names: list[str]) -> bool:
+    """True if row's celebrities list contains any of person_names (normalize space/underscore)."""
+    celebs = row.get("celebrities")
+    if celebs is None:
+        return False
+    try:
+        names_norm = {n.lower().replace("_", " ") for n in person_names}
+        for x in celebs:
+            if x is None:
+                continue
+            cx = str(x).strip().lower().replace("_", " ")
+            if cx in names_norm:
+                return True
+            for p in names_norm:
+                if p in cx or cx in p:
+                    return True
+    except (TypeError, ValueError):
+        return False
+    return False
 
 
 def _get_download_url() -> str | None:
@@ -403,20 +424,37 @@ def main():
 
     with st.spinner("Analyzing query..."):
         intent, search_query = _analyze_query(query, settings)
-    # If the user query mentions a known person (from my_db / face recognition), filter to those rows
     known_people = _get_known_people()
     mentioned_people = _detect_mentioned_people(query.strip(), known_people)
-    if mentioned_people:
-        display_names = [n.replace("_", " ") for n in mentioned_people]
-        st.info(f"Filtering to images where **{', '.join(display_names)}** was identified (face recognition).")
+
+    # When query is a person name: show all images where that person is in "people present" (up to limit)
+    MAX_PERSON_RESULTS = 200
+
     with st.spinner("Searching..."):
         try:
-            results = search(
-                search_query,
-                k=k,
-                dataset_id=dataset_id,
-                person_filter=mentioned_people if mentioned_people else None,
-            )
+            if mentioned_people:
+                # Person filter first, then hybrid search on that subset; request up to MAX_PERSON_RESULTS
+                results = search(
+                    search_query,
+                    k=MAX_PERSON_RESULTS,
+                    dataset_id=dataset_id,
+                    person_filter=mentioned_people,
+                )
+                # If DB person filter returned nothing, fallback: fetch more and filter in Python
+                if results is None or results.empty:
+                    results = search(search_query, k=MAX_PERSON_RESULTS, dataset_id=dataset_id, person_filter=None)
+                    if results is not None and not results.empty:
+                        filtered_idx = [i for i, row in results.iterrows() if _row_has_any_person(row, mentioned_people)]
+                        results = results.loc[filtered_idx].reset_index(drop=True)
+                if mentioned_people and results is not None and not results.empty:
+                    display_names = [n.replace("_", " ") for n in mentioned_people]
+                    st.info(f"Showing all images where **{', '.join(display_names)}** was identified (face recognition).")
+                elif mentioned_people and (results is None or results.empty):
+                    display_names = [n.replace("_", " ") for n in mentioned_people]
+                    st.warning(f"No images where **{', '.join(display_names)}** was identified.")
+                    return
+            else:
+                results = search(search_query, k=k, dataset_id=dataset_id, person_filter=None)
         except Exception as e:
             st.exception(e)
             return
@@ -450,10 +488,12 @@ def main():
                 if blob is not None and isinstance(blob, (bytes, bytearray)):
                     st.image(blob, use_container_width=True)
                 st.markdown(f"**{row.get('source_file', '')}** p.{row.get('page_no', '')}")
-                # Caption (no heading)
+                # Caption (no heading); empty = caption step failed during pipeline (API/timeout)
                 cap = row.get("caption")
                 if cap is not None and str(cap).strip():
                     st.caption(str(cap).strip())
+                else:
+                    st.caption("_(No caption)_")
                 # People present (from face recognition); may be list or numpy array from LanceDB
                 celebs = row.get("celebrities")
                 if celebs is not None:

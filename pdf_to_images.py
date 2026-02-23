@@ -91,9 +91,12 @@ def main() -> int:
     total_pages = 0
 
     for n in range(1, 6):
+        # Accept both dataset_2 and dataset2 (no underscore)
         ds_dir = args.base_dir / f"dataset_{n}"
         if not ds_dir.is_dir():
-            LOG.warning("Skipping missing directory: %s", ds_dir)
+            ds_dir = args.base_dir / f"dataset{n}"
+        if not ds_dir.is_dir():
+            LOG.warning("Skipping missing directory: dataset_%d or dataset%d", n, n)
             continue
         img_dir = out_base / f"dataset_{n}_images"
         LOG.info("Processing dataset_%d -> %s", n, img_dir)
