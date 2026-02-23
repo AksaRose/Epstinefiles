@@ -5,12 +5,15 @@ Set CHROMA_DIR to a local chroma_db path, or CHROMA_HF_DATASET to auto-download 
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import List
 
 from config import load_settings
 from groq import Groq
+
+LOG = logging.getLogger(__name__)
 
 CHROMA_EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 CHROMA_QUERY_K = 8
@@ -22,10 +25,14 @@ _chroma_collection_cache: dict = {}
 
 def _chroma_base_dir(settings) -> Path | None:
     """Resolve Chroma DB directory: CHROMA_DIR or download from CHROMA_HF_DATASET."""
-    if settings.chroma_dir and settings.chroma_dir.is_dir():
-        return settings.chroma_dir
+    if settings.chroma_dir:
+        resolved = settings.chroma_dir.resolve()
+        if resolved.is_dir():
+            return resolved
+        LOG.warning("Chroma: CHROMA_DIR=%s does not exist or is not a directory", resolved)
     hf = getattr(settings, "chroma_hf_dataset", None) or os.environ.get("CHROMA_HF_DATASET")
     if not hf:
+        LOG.debug("Chroma: no CHROMA_DIR and no CHROMA_HF_DATASET")
         return None
     try:
         from huggingface_hub import snapshot_download
@@ -36,7 +43,8 @@ def _chroma_base_dir(settings) -> Path | None:
         if chroma_db.is_dir():
             return chroma_db
         return base
-    except Exception:
+    except Exception as e:
+        LOG.warning("Chroma: HF download failed: %s", e)
         return None
 
 
@@ -61,6 +69,7 @@ def get_chroma_chunks(query: str, k: int = CHROMA_QUERY_K, fetch_k: int = CHROMA
             ef = SentenceTransformerEmbeddingFunction(model_name=CHROMA_EMBED_MODEL)
             colls = client.list_collections()
             if not colls:
+                LOG.warning("Chroma: no collections in %s", base_str)
                 return []
             _chroma_collection_cache[base_str] = client.get_collection(name=colls[0].name, embedding_function=ef)
         coll = _chroma_collection_cache[base_str]
@@ -70,8 +79,11 @@ def get_chroma_chunks(query: str, k: int = CHROMA_QUERY_K, fetch_k: int = CHROMA
             for doc in res["documents"][0][:k]:
                 if doc and isinstance(doc, str) and doc.strip():
                     texts.append(doc.strip())
+        if not texts:
+            LOG.warning("Chroma: query returned 0 chunks from %s", base_str)
         return texts
-    except Exception:
+    except Exception as e:
+        LOG.warning("Chroma: query failed: %s", e)
         return []
 
 

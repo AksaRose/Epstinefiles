@@ -514,9 +514,15 @@ def main():
         st.caption("*Note: shown images may not always be directly related to your query.*")
     else:
         summary = _summarize_results(query, captions_for_summary, settings)
+        st.subheader("Summary of results")
         if summary:
-            st.subheader("Summary of results")
             st.markdown(summary)
+        else:
+            # Fallback when no Chroma and no caption summary (e.g. no GROQ_API_KEY or no captions)
+            if captions_for_summary:
+                st.markdown("Summary could not be generated. See captions below each image.")
+            else:
+                st.markdown("See the images below. For a text description, set **CHROMA_DIR** or **CHROMA_HF_DATASET** and **GROQ_API_KEY** in `.env` on the server.")
 
     # Grid of results: 3 per row
     ncols = 3
