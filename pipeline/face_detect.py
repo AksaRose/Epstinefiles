@@ -16,12 +16,50 @@ def _get_insightface_app():
     if _INSIGHTFACE_APP is None:
         try:
             from insightface.app import FaceAnalysis
+            from config import load_settings
+            settings = load_settings()
+            det_thresh = getattr(settings, "face_det_thresh", 0.35)
             app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
-            app.prepare(ctx_id=0, det_size=(640, 640))
+            app.prepare(ctx_id=0, det_thresh=det_thresh, det_size=(640, 640))
             _INSIGHTFACE_APP = app
         except Exception:
             raise RuntimeError("InsightFace not available. Install: pip install insightface onnxruntime")
     return _INSIGHTFACE_APP
+
+
+def extract_faces_with_embeddings(image_path: Path) -> Tuple[List[Tuple[np.ndarray, List[int]]], bytes]:
+    """
+    Detect faces and extract ArcFace embeddings (no my_db recognition).
+    Returns (list of (embedding_512, bbox_xyxy)), image_bytes.
+    bbox_xyxy = [x1, y1, x2, y2] as ints.
+    """
+    img = cv2.imread(str(image_path))
+    if img is None:
+        data = image_path.read_bytes()
+        arr = np.frombuffer(data, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError(f"Failed to load image: {image_path}")
+
+    success, buf = cv2.imencode(".png", img)
+    if not success:
+        raise ValueError(f"Failed to encode image as PNG: {image_path}")
+    image_bytes = buf.tobytes()
+
+    app = _get_insightface_app()
+    faces = app.get(img)
+    result: List[Tuple[np.ndarray, List[int]]] = []
+    for f in faces:
+        if not hasattr(f, "embedding") or f.embedding is None:
+            continue
+        emb = np.asarray(f.embedding, dtype=np.float32)
+        bbox = getattr(f, "bbox", None)
+        if bbox is not None:
+            bbox_list = [int(round(x)) for x in bbox[:4]]
+        else:
+            bbox_list = [0, 0, 0, 0]
+        result.append((emb, bbox_list))
+    return result, image_bytes
 
 
 def _cosine_distance(a: np.ndarray, b: np.ndarray) -> float:

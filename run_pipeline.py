@@ -85,35 +85,143 @@ def _discover_from_dir(img_dir: Path, dataset_id: int) -> List[Dict]:
     return items
 
 
+# Dataset ID for the HS (House oversight / high school) folder when present under base_dir
+HS_DATASET_ID = 6
+
+
 def discover_images(base_dir: Path) -> List[Dict]:
+    """Discover images from dataset_1_images*, ..., dataset_5_images*, and HS. Supports .png, .jpg, .jpeg, .bmp. Includes all matching dirs per dataset (e.g. dataset_2_images and dataset_2_images2)."""
     items: List[Dict] = []
     for dataset_id in range(1, 6):
-        img_dir = base_dir / f"dataset_{dataset_id}_images"
-        if not img_dir.is_dir():
-            # Accept dataset_N_images2, dataset_N_images_extra, etc.
-            candidates = sorted(p for p in base_dir.glob(f"dataset_{dataset_id}_images*") if p.is_dir())
-            if not candidates:
-                LOG.warning("Missing images directory: dataset_%d_images (or dataset_%d_images*)", dataset_id, dataset_id)
-                continue
-            img_dir = candidates[0]
-        for path in sorted(img_dir.glob("*.png")):
-            stem = path.stem  # e.g. EFTA00000001_page0001
-            if "_page" not in stem:
-                continue
-            source, page_part = stem.split("_page", 1)
-            try:
-                page_no = int(page_part)
-            except ValueError:
-                page_no = 0
-            items.append(
-                {
-                    "dataset_id": dataset_id,
-                    "source_file": f"{source}.pdf",
-                    "page_no": page_no,
-                    "image_path": path,
-                }
-            )
+        # All dirs for this dataset: dataset_N_images, dataset_N_images2, etc.
+        candidates = sorted(p for p in base_dir.glob(f"dataset_{dataset_id}_images*") if p.is_dir())
+        if not candidates:
+            LOG.warning("Missing images directory: dataset_%d_images (or dataset_%d_images*)", dataset_id, dataset_id)
+            continue
+        for img_dir in candidates:
+            paths: List[Path] = []
+            for ext in _IMAGE_EXTENSIONS:
+                paths.extend(img_dir.glob(f"*{ext}"))
+            for path in sorted(set(paths)):
+                stem = path.stem
+                if "_page" in stem:
+                    try:
+                        source, page_part = stem.split("_page", 1)
+                        page_no = int(page_part)
+                    except ValueError:
+                        source, page_no = stem, 1
+                    source_file = f"{source}.pdf"
+                else:
+                    source_file = f"{stem}{path.suffix}"
+                    page_no = 1
+                items.append(
+                    {
+                        "dataset_id": dataset_id,
+                        "source_file": source_file,
+                        "page_no": page_no,
+                        "image_path": path,
+                    }
+                )
+    # HS folder (House oversight / high school photos)
+    for name in ("HS", "hs"):
+        hs_dir = base_dir / name
+        if hs_dir.is_dir():
+            hs_items = _discover_from_dir(hs_dir, HS_DATASET_ID)
+            items.extend(hs_items)
+            LOG.info("Discovered %d images from %s", len(hs_items), hs_dir)
+            break
     return items
+
+
+def _run_face_clustering(settings, args) -> int:
+    """Face-clustering pipeline: detect faces, DBSCAN cluster, write images + faces tables."""
+    from pipeline.face_detect import extract_faces_with_embeddings
+    from pipeline.cluster_faces import FaceRecord, cluster_faces
+    from pipeline import face_store
+
+    if args.images_dir is not None:
+        img_dir = args.images_dir.resolve()
+        if not img_dir.is_dir():
+            LOG.error("Not a directory: %s", img_dir)
+            return 1
+        match = re.search(r"dataset_(\d+)", img_dir.name)
+        dataset_id = int(match.group(1)) if match else 2
+        if args.datasets is not None and len(args.datasets) == 1:
+            dataset_id = args.datasets[0]
+        items = _discover_from_dir(img_dir, dataset_id)
+        LOG.info("Using only %s (dataset_id=%d): %d images", img_dir, dataset_id, len(items))
+    else:
+        LOG.info("Using images base dir: %s", settings.images_base_dir)
+        items = discover_images(settings.images_base_dir)
+        if args.datasets is not None:
+            items = [x for x in items if x["dataset_id"] in args.datasets]
+            LOG.info("Filtered to dataset(s) %s: %d images", args.datasets, len(items))
+        else:
+            LOG.info("Discovered %d images", len(items))
+    if not items:
+        LOG.error("No images found. Run pdf_to_images.py first.")
+        return 1
+
+    face_records: List[FaceRecord] = []
+    image_rows: List[Dict] = []
+
+    for idx, item in enumerate(items):
+        path = item["image_path"]
+        row_id = _item_id(item)
+        try:
+            faces_list, image_bytes = extract_faces_with_embeddings(path)
+        except Exception as e:
+            LOG.warning("Face extraction failed for %s: %s", path, e)
+            faces_list = []
+            image_bytes = path.read_bytes()
+        image_rows.append({
+            "id": row_id,
+            "dataset_id": int(item["dataset_id"]),
+            "source_file": item["source_file"],
+            "page_no": int(item["page_no"]),
+            "image_path": str(path),
+            "image_blob": image_bytes,
+        })
+        for fi, (emb, bbox) in enumerate(faces_list):
+            face_records.append(FaceRecord(
+                image_id=row_id,
+                face_index=fi,
+                embedding=emb,
+                bbox=bbox,
+            ))
+        if (idx + 1) % 50 == 0:
+            LOG.info("Processed %d / %d images, %d faces", idx + 1, len(items), len(face_records))
+
+    LOG.info("Total %d images, %d faces. Clustering with DBSCAN...", len(image_rows), len(face_records))
+
+    eps = settings.dbscan_eps
+    min_samples = settings.dbscan_min_samples
+    face_records, representatives = cluster_faces(face_records, eps=eps, min_samples=min_samples)
+
+    images_table = face_store.get_or_create_images_table(settings.lancedb_dir, overwrite=args.overwrite)
+    faces_table = face_store.get_or_create_faces_table(settings.lancedb_dir, vector_dim=face_store.FACE_EMBED_DIM, overwrite=args.overwrite)
+
+    face_store.write_images_batch(images_table, image_rows)
+    LOG.info("Wrote %d image rows.", len(image_rows))
+
+    face_rows = [
+        {
+            "face_id": f"{r.image_id}_{r.face_index}",
+            "image_id": r.image_id,
+            "vector": r.embedding.tolist(),
+            "cluster_id": r.cluster_id,
+            "bbox": r.bbox,
+        }
+        for r in face_records
+    ]
+    face_store.write_faces_batch(faces_table, face_rows)
+    LOG.info("Wrote %d face rows.", len(face_rows))
+
+    face_store.save_cluster_representatives(settings.lancedb_dir, representatives)
+    LOG.info("Saved %d cluster representatives.", len(representatives))
+
+    LOG.info("Done (face-clustering).")
+    return 0
 
 
 def process_chunk(
@@ -218,10 +326,14 @@ def main() -> int:
     parser.add_argument("--images-dir", type=Path, default=None, metavar="PATH", help="Only process this folder (e.g. epstein_pdfs/dataset_2_images2). Dataset ID inferred from path or use with --datasets 2.")
     parser.add_argument("--fts-only", action="store_true", help="Only rebuild the FTS index on searchable_text (no image processing). Use if hybrid search failed or index was missing.")
     parser.add_argument("--fill-empty-only", action="store_true", help="Only process images that have no caption yet (skip already-captioned; re-caption and update rows with empty caption). Ignored if --overwrite.")
+    parser.add_argument("--face-clustering", action="store_true", help="Run face-clustering pipeline only: detect faces, cluster with DBSCAN, write images + faces tables. No caption/embed/RAG.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     settings = load_settings()
+
+    if args.face_clustering:
+        return _run_face_clustering(settings, args)
 
     if args.images_dir is not None:
         img_dir = args.images_dir.resolve()

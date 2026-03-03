@@ -21,7 +21,11 @@ class Settings:
     chroma_dir: Path | None  # Local path to Chroma DB (Epstein text RAG); None = disabled
     chroma_hf_dataset: str | None  # If set, download this HF dataset and use its chroma_db/
     face_backend: str  # "insightface" (buffalo_l) or "deepface"
+    face_det_thresh: float  # InsightFace detection confidence threshold; lower = more faces (e.g. 0.35)
     face_distance_threshold: float  # max cosine distance to accept a match (e.g. 0.8)
+    dbscan_eps: float  # DBSCAN eps (cosine); higher = merge more (same person across photos), lower = fewer merges
+    dbscan_min_samples: int  # DBSCAN min_samples; 1 = every face gets a cluster (no noise), 2+ = only groups
+    # Optional for face-only mode (caption/embed/RAG/LLM):
     together_api_key: str | None
     embed_model: str
     qwen_model: str
@@ -51,7 +55,10 @@ def load_settings() -> Settings:
         chroma_dir=chroma_dir,
         chroma_hf_dataset=chroma_hf_dataset,
         face_backend=os.getenv("FACE_BACKEND", "insightface"),
+        face_det_thresh=float(os.getenv("FACE_DET_THRESH", "0.35")),
         face_distance_threshold=float(os.getenv("FACE_DISTANCE_THRESHOLD", "0.8")),
+        dbscan_eps=float(os.getenv("DBSCAN_EPS", "0.58")),
+        dbscan_min_samples=int(os.getenv("DBSCAN_MIN_SAMPLES", "1")),
         together_api_key=os.getenv("TOGETHER_API_KEY"),
         embed_model=os.getenv("EMBED_MODEL", "Alibaba-NLP/gte-modernbert-base"),
         qwen_model=os.getenv("QWEN_MODEL", "qwen/qwen3-vl-32b-instruct"),

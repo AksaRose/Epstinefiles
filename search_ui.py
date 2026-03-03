@@ -1,377 +1,75 @@
 #!/usr/bin/env python3
-"""Streamlit UI to search the Epstein image index (LanceDB)."""
+"""Streamlit UI for the Epstein face-clustering image gallery: cluster circles, people search, dataset filter."""
 
 from __future__ import annotations
 
+import io
 import os
-import re
-import tempfile
-import zipfile
+import base64
 from pathlib import Path
-from urllib.request import Request, urlopen
 
+import pandas as pd
 import lancedb
-import numpy as np
 import streamlit as st
-from groq import Groq
 
 from config import load_settings
-from chroma_rag import description_from_chroma
-from pipeline.embed import embed_query
+from pipeline import face_store
 
 
-@st.cache_resource
-def _get_known_people():
-    """Known person names (my_db folder names) used for face recognition at ingestion."""
-    settings = load_settings()
-    if not settings.faces_db_dir.is_dir():
-        return []
-    return [p.name for p in sorted(settings.faces_db_dir.iterdir()) if p.is_dir()]
-
-
-def _detect_mentioned_people(query: str, known_people: list[str]) -> list[str]:
-    """Return known person names that appear in the query or whose name contains the query (case-insensitive).
-    Treats spaces and underscores as equivalent so 'bill gates' matches folder 'Bill_Gates'.
-    """
-    if not query or not known_people:
-        return []
-    q = query.strip().lower().replace("_", " ")
-    if not q:
-        return []
-    return [
-        name
-        for name in known_people
-        if name.lower().replace("_", " ") in q or q in name.lower().replace("_", " ")
-    ]
-
-
-def _person_filter_where(person_names: list[str]) -> str:
-    """Build LanceDB .where() predicate: celebrities list contains any of these names."""
-    if not person_names:
-        return ""
-    # Escape single quotes in names for SQL literal
-    escaped = [n.replace("'", "''") for n in person_names]
-    literals = ", ".join(f"'{e}'" for e in escaped)
-    return f"array_has_any(celebrities, [{literals}])"
-
-
-def _row_has_any_person(row, person_names: list[str]) -> bool:
-    """True if row's celebrities list contains any of person_names (normalize space/underscore)."""
-    celebs = row.get("celebrities")
-    if celebs is None:
-        return False
+def _image_bytes_from_path(image_path: str | None) -> bytes | None:
+    """Load image bytes from disk. Returns None if path missing or unreadable."""
+    if not image_path:
+        return None
+    p = Path(image_path)
+    if not p.exists() or not p.is_file():
+        return None
     try:
-        names_norm = {n.lower().replace("_", " ") for n in person_names}
-        for x in celebs:
-            if x is None:
-                continue
-            cx = str(x).strip().lower().replace("_", " ")
-            if cx in names_norm:
-                return True
-            for p in names_norm:
-                if p in cx or cx in p:
-                    return True
-    except (TypeError, ValueError):
-        return False
-    return False
-
-
-def _get_download_url() -> str | None:
-    """LANCEDB_DOWNLOAD_URL from env or Streamlit secrets (for cloud deploy)."""
-    url = os.environ.get("LANCEDB_DOWNLOAD_URL")
-    if url:
-        return url.strip() or None
-    try:
-        return st.secrets.get("LANCEDB_DOWNLOAD_URL") or None
+        return p.read_bytes()
     except Exception:
         return None
 
 
-# Browser User-Agent so Google Drive doesn't block the request
-_UA = "Mozilla/5.0 (Windows NT 10.0; rv:91.0) Gecko/20100101 Firefox/91.0"
-
-# Simple persistent visitor counter
-_VISITOR_FILE = Path("visitor_count.txt")
-
-
-def _load_visitor_count() -> int:
-    try:
-        return int(_VISITOR_FILE.read_text().strip() or "0")
-    except FileNotFoundError:
-        return 0
-    except ValueError:
-        return 0
-
-
-def _increment_visitor_count() -> int:
-    """
-    Increment the global visitor count once per browser session.
-    """
-    count = _load_visitor_count()
-    if not st.session_state.get("visitor_counted"):
-        count += 1
-        try:
-            _VISITOR_FILE.write_text(str(count))
-        except Exception:
-            pass
-        st.session_state["visitor_counted"] = True
-    return count
-
-
-def _resolve_google_drive_url(url: str) -> str:
-    """
-    If Google Drive returns HTML (virus scan / confirm page), parse it and return
-    the URL with the confirm token so the next request gets the actual file.
-    """
-    if "drive.google.com" not in url:
-        return url
-    mid = re.search(r"id=([0-9A-Za-z_.-]+)", url)
-    if not mid:
-        return url
-    file_id = mid.group(1)
-
-    req = Request(url, headers={"User-Agent": _UA})
-    with urlopen(req, timeout=30) as resp:
-        head = resp.read(64 * 1024)  # first 64 KB
-    # Zip files start with PK
-    if head.startswith(b"PK"):
-        return url
-    try:
-        body = head.decode("utf-8", errors="ignore")
-    except Exception:
-        return _usercontent_drive_url(file_id)
-    # Look for confirm token in Google's "virus scan" page
-    m = re.search(r"confirm=([^\"'\s&]+)", body)
-    if m:
-        token = m.group(1)
-        return f"https://drive.google.com/uc?export=download&id={file_id}&confirm={token}"
-    m = re.search(r"/uc\?export=download[^\"']*confirm=([^\"'\s&]+)", body)
-    if m:
-        return f"https://drive.google.com/uc?export=download&id={file_id}&confirm={m.group(1)}"
-    # Fallback: usercontent endpoint with confirm=t (often works for public files)
-    return _usercontent_drive_url(file_id)
-
-
-def _usercontent_drive_url(file_id: str) -> str:
-    """Alternative Drive download URL that sometimes bypasses virus scan."""
-    return f"https://drive.usercontent.google.com/download?export=download&confirm=t&id={file_id}"
-
-
-def _download_to_file(url: str, tmp_path: str, progress_callback=None) -> None:
-    """Download url to tmp_path, handling Google Drive confirm. progress_callback(total_mb) optional."""
-    url = _resolve_google_drive_url(url)
-    req = Request(url, headers={"User-Agent": _UA})
-    chunk_size = 1 << 20  # 1 MB
-    with urlopen(req, timeout=60) as resp:
-        with open(tmp_path, "wb") as out:
-            total = 0
-            while True:
-                chunk = resp.read(chunk_size)
-                if not chunk:
-                    break
-                out.write(chunk)
-                total += len(chunk)
-                if progress_callback:
-                    progress_callback(total // (1 << 20))
-
-
-def _ensure_lancedb(settings) -> bool:
-    """
-    If LanceDB dir is missing and LANCEDB_DOWNLOAD_URL is set, download zip and unzip.
-    Zip must contain the table at top level (e.g. epstein_images.lance/).
-    Supports Google Drive (handles virus-scan confirm page).
-    """
-    table_lance = settings.lancedb_dir / f"{settings.table_name}.lance"
-    if table_lance.exists():
-        return True
-
-    url = _get_download_url()
-    if not url:
-        return False
-
-    settings.lancedb_dir.mkdir(parents=True, exist_ok=True)
-    with st.spinner("Downloading database (first run or cold start). This may take a few minutes."):
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as f:
-                tmp = f.name
-            try:
-                def on_progress(mb: int):
-                    st.progress(min(1.0, mb / 200.0), text=f"Downloaded {mb} MB")
-
-                _download_to_file(url, tmp, progress_callback=on_progress)
-                st.progress(1.0, text="Extracting...")
-                with zipfile.ZipFile(tmp, "r") as zf:
-                    zf.extractall(settings.lancedb_dir)
-            finally:
-                try:
-                    Path(tmp).unlink(missing_ok=True)
-                except Exception:
-                    pass
-            return True
-        except zipfile.BadZipFile as e:
-            st.error(f"Downloaded file is not a valid zip (often means Google Drive confirm failed): {e}")
-            return False
-        except Exception as e:
-            st.error(f"Failed to download database: {e}")
-            return False
-
-
-def _analyze_query(user_query: str, settings) -> tuple[str, str]:
-    """
-    Use Groq to classify intent (question vs keyword search) and produce a search-optimized query
-    for better retrieval. Returns (intent, search_query).
-    """
-    groq_key = getattr(settings, "groq_api_key", None) or os.environ.get("GROQ_API_KEY")
-    if not groq_key or not user_query.strip():
-        return ("keyword_search", user_query.strip())
-
-    model = getattr(settings, "groq_summary_model", None) or os.environ.get("GROQ_SUMMARY_MODEL", "llama-3.3-70b-versatile")
-    prompt = (
-        "You are analyzing a user input for an image search gallery about DOJ-released materials related to the Epstein case.\n\n"
-        f"User input: \"{user_query.strip()}\"\n\n"
-        "Reply with exactly two lines:\n"
-        "Line 1: Either QUESTION or KEYWORD (whether the user asked a question or is searching by topic/keywords).\n"
-        "Line 2: A short search query (keywords or key phrases) that would best find relevant images. For questions, turn the question into search keywords (e.g. \"Who was at the party?\" -> \"party, people, guests, gathering\"). For keyword search, use or lightly expand the user's words. Do not add specific names or places the user did not mention. Keep line 2 under 15 words."
-    )
-    try:
-        client = Groq(api_key=groq_key)
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=80,
-            temperature=0,
-        )
-        text = (resp.choices[0].message.content or "").strip()
-        lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
-        if len(lines) >= 2:
-            intent = "question" if "QUESTION" in lines[0].upper() else "keyword_search"
-            search_query = lines[1].strip()
-            if search_query:
-                return (intent, search_query)
-    except Exception:
-        pass
-    return ("keyword_search", user_query.strip())
-
-
-def _summarize_results(query: str, captions: list[str], settings) -> str | None:
-    """
-    Use Groq (Llama) to generate a brief, answer-like summary grounded in the top results.
-    """
-    if not captions:
+def _crop_image_to_bbox(blob: bytes, bbox: list[int]) -> bytes | None:
+    """Crop image to bbox [x1,y1,x2,y2]; clamp to image size. Returns PNG bytes or None."""
+    if not blob or len(bbox) < 4:
         return None
-    groq_key = getattr(settings, "groq_api_key", None) or os.environ.get("GROQ_API_KEY")
-    if not groq_key:
-        return None
-
-    model = getattr(settings, "groq_summary_model", None) or os.environ.get("GROQ_SUMMARY_MODEL", "llama-3.3-70b-versatile")
-    client = Groq(api_key=groq_key)
-    top_caps = captions[: min(20, len(captions))]
-    numbered = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(top_caps))
-    prompt = (
-        "You are answering a user's query using only what appears in a set of image captions from DOJ-released materials "
-        "related to the Epstein case.\n\n"
-        f"User query:\n{query}\n\n"
-        "Captions of the most relevant images:\n"
-        f"{numbered}\n\n"
-        "Based only on these captions, write a short, neutral answer (2–4 sentences) that speaks directly to the user's query. "
-        "If the captions do not provide enough information to fully answer the query, say that clearly and instead describe what "
-        "the images do show that is relevant. Do not speculate, infer, or introduce people, places, or events that are not "
-        "explicitly mentioned in the captions. Do not hallucinate; when uncertain, say so."
-    )
-
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=220,
-            temperature=0,
-        )
-    except Exception:
-        return None
-
-    choice = resp.choices[0]
-    text = choice.message.content
-    cleaned = (text or "").strip()
-    return cleaned or None
-
-
-def _images_oneliner(captions: list[str], settings) -> str | None:
-    """One sentence describing what the shown images are (from captions). Used below Chroma description."""
-    if not captions:
-        return None
-    groq_key = getattr(settings, "groq_api_key", None) or os.environ.get("GROQ_API_KEY")
-    if not groq_key:
-        return None
-    model = getattr(settings, "groq_summary_model", None) or os.environ.get("GROQ_SUMMARY_MODEL", "llama-3.3-70b-versatile")
-    client = Groq(api_key=groq_key)
-    top = "\n".join(captions[: min(8, len(captions))])
-    prompt = (
-        "These are captions of search result images from DOJ Epstein materials.\n\n"
-        f"{top}\n\n"
-        "Reply with exactly one short sentence (no period at the end if you prefer) that describes what these images show in general. Do not answer any user question; only describe the images."
-    )
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=60,
-            temperature=0,
-        )
-        text = (resp.choices[0].message.content or "").strip()
-        return text.rstrip(".") or None
+        from PIL import Image
+        img = Image.open(io.BytesIO(blob)).convert("RGB")
+        w, h = img.size
+        x1 = max(0, min(int(bbox[0]), w - 1))
+        y1 = max(0, min(int(bbox[1]), h - 1))
+        x2 = max(x1 + 1, min(int(bbox[2]), w))
+        y2 = max(y1 + 1, min(int(bbox[3]), h))
+        cropped = img.crop((x1, y1, x2, y2))
+        buf = io.BytesIO()
+        cropped.save(buf, format="PNG")
+        return buf.getvalue()
     except Exception:
         return None
 
 
 @st.cache_resource
-def get_table():
+def _get_face_tables():
+    """Open LanceDB images and faces tables. Raises if not found."""
     settings = load_settings()
-    if not _ensure_lancedb(settings):
+    lancedb_dir = Path(settings.lancedb_dir)
+    if not lancedb_dir.exists():
+        raise FileNotFoundError(f"LanceDB dir not found: {lancedb_dir}. Run: python run_pipeline.py --face-clustering")
+    db = lancedb.connect(str(lancedb_dir))
+    try:
+        images_t = db.open_table(face_store.IMAGES_TABLE)
+        faces_t = db.open_table(face_store.FACES_TABLE)
+    except Exception as e:
         raise FileNotFoundError(
-            "LanceDB not found. Run the pipeline locally (python run_pipeline.py) or set "
-            "LANCEDB_DOWNLOAD_URL to a zip of the lancedb folder for cloud deploy."
-        )
-    db = lancedb.connect(str(settings.lancedb_dir))
-    return db.open_table(settings.table_name), settings
-
-
-def search(
-    query: str,
-    k: int = 12,
-    dataset_id: int | None = None,
-    person_filter: list[str] | None = None,
-):
-    settings = load_settings()
-    table, _ = get_table()
-    vec = embed_query(
-        query,
-        api_key=settings.together_api_key,
-        model=settings.embed_model,
-    )
-    vec_arr = np.array(vec, dtype="float32")
-    try:
-        q = (
-            table.search(query_type="hybrid", vector_column_name="vector")
-            .vector(vec_arr)
-            .text(query)
-        )
-    except Exception:
-        q = table.search(vec_arr)
-    if dataset_id is not None:
-        q = q.where(f"dataset_id = {int(dataset_id)}")
-    if person_filter:
-        where_expr = _person_filter_where(person_filter)
-        if where_expr:
-            q = q.where(where_expr)
-    results = q.limit(k).to_pandas()
-    return results
+            f"Face-clustering tables not found. Run: python run_pipeline.py --face-clustering. ({e})"
+        ) from e
+    return images_t, faces_t, settings
 
 
 def main():
-    # Transparent 1x1 PNG so the tab doesn't show the Streamlit favicon
     _BLANK_FAVICON = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
-    st.set_page_config(page_title="Epstein Image Search", layout="wide", page_icon=_BLANK_FAVICON)
-    # Microsoft Clarity analytics
+    st.set_page_config(page_title="Epstein Image Gallery", layout="wide", page_icon=_BLANK_FAVICON)
     st.components.v1.html(
         """
         <script type="text/javascript">
@@ -385,6 +83,7 @@ def main():
         height=0,
     )
     st.title("Epstein Case Image Gallery")
+
     with st.sidebar:
         st.markdown("### Support this project")
         st.markdown(
@@ -408,148 +107,206 @@ def main():
             """,
             height=80,
         )
-    st.markdown(
-        "This is an image gallery of materials related to the Epstein case. You can search across all images by keyword or topic. "
-        "**All images displayed here are from documents released by the U.S. Department of Justice (DOJ)** as part of its disclosure. "
-        "Use the search box below to find images (e.g., by place, person, or subject)."
-    )
 
-    with st.expander("About this gallery & disclaimer", expanded=False):
+    st.markdown(
+        "Image gallery of DOJ-released materials related to the Epstein case. "
+        "**Faces are clustered** — click a person below to see all images containing that face. "
+        "Use the search box to filter clusters by name; you can rename any cluster."
+    )
+    with st.expander("About & disclaimer", expanded=False):
         st.markdown(
-            "**Current scope:** This gallery currently includes approximately **250 documents** across DOJ disclosure datasets 1–5. "
-            "That is roughly one fifth of the material released so far. The focus here is on **photographs** rather than emails or text-heavy images; "
-            "the indexed set contains **2,000+ images**."
-        )
-        st.markdown(
-            "**Disclaimer:** Captions and metadata are generated with AI (LLM) and **may contain errors**. "
-            "This material is sensitive. Do not rely on it for legal or factual conclusions; refer to official DOJ sources when accuracy matters."
+            "**Scope:** This gallery uses face detection and clustering (no caption/LLM). "
+            "All images are from DOJ disclosure. Do not rely on this for legal or factual conclusions."
         )
 
     try:
-        table, settings = get_table()
-    except Exception as e:
-        st.error(f"Cannot open index: {e}. Run the pipeline first (`python run_pipeline.py`).")
+        with st.spinner("Opening database..."):
+            images_table, faces_table, settings = _get_face_tables()
+    except FileNotFoundError as e:
+        st.error(str(e))
         return
 
-    query = st.text_input("Search", placeholder="e.g. Epstein island photos, people at a party")
-    col_k, col_ds, _ = st.columns([1, 1, 3])
-    with col_k:
-        k = st.number_input("Number of results", min_value=1, max_value=50, value=12)
-    with col_ds:
-        dataset_filter = st.selectbox(
-            "Dataset",
-            ["All", "1", "2", "3", "4", "5"],
-            help="Filter by DOJ disclosure dataset",
-        )
-    dataset_id = None if dataset_filter == "All" else int(dataset_filter)
+    lancedb_dir = Path(settings.lancedb_dir)
+    cluster_names = face_store.load_cluster_names(lancedb_dir)
+    representatives = face_store.load_cluster_representatives(lancedb_dir)
 
-    if not query.strip():
-        st.info("Enter a search query above.")
-        return
-
-    if not settings.together_api_key:
-        st.error("Set TOGETHER_API_KEY in .env to run search (embedding the query).")
-        return
-
-    with st.spinner("Analyzing query..."):
-        intent, search_query = _analyze_query(query, settings)
-    known_people = _get_known_people()
-    mentioned_people = _detect_mentioned_people(query.strip(), known_people)
-
-    # When query is a person name: show all images where that person is in "people present" (up to limit)
-    MAX_PERSON_RESULTS = 200
-
-    with st.spinner("Searching..."):
+    # Load images metadata only (exclude image_blob to avoid Lance offset-overflow decode bugs)
+    _IMG_META_COLS = ["id", "dataset_id", "source_file", "page_no", "image_path"]
+    with st.spinner("Loading images table..."):
         try:
-            if mentioned_people:
-                # Person filter first, then hybrid search on that subset; request up to MAX_PERSON_RESULTS
-                results = search(
-                    search_query,
-                    k=MAX_PERSON_RESULTS,
-                    dataset_id=dataset_id,
-                    person_filter=mentioned_people,
-                )
-                # If DB person filter returned nothing, fallback: fetch more and filter in Python
-                if results is None or results.empty:
-                    results = search(search_query, k=MAX_PERSON_RESULTS, dataset_id=dataset_id, person_filter=None)
-                    if results is not None and not results.empty:
-                        filtered_idx = [i for i, row in results.iterrows() if _row_has_any_person(row, mentioned_people)]
-                        results = results.loc[filtered_idx].reset_index(drop=True)
-                if mentioned_people and results is not None and not results.empty:
-                    display_names = [n.replace("_", " ") for n in mentioned_people]
-                    st.info(f"Showing all images where **{', '.join(display_names)}** was identified (face recognition).")
-                elif mentioned_people and (results is None or results.empty):
-                    display_names = [n.replace("_", " ") for n in mentioned_people]
-                    st.warning(f"No images where **{', '.join(display_names)}** was identified.")
-                    return
-            else:
-                results = search(search_query, k=k, dataset_id=dataset_id, person_filter=None)
+            img_df = images_table.search().select(_IMG_META_COLS).limit(1_000_000).to_pandas()
         except Exception as e:
+            st.error(
+                "Could not load images table. If you see an 'offset overflow' error, the table may be corrupted; "
+                "try re-running: python run_pipeline.py --face-clustering"
+            )
             st.exception(e)
             return
-
-    if results is None or results.empty:
-        st.warning("No results.")
+    if img_df is None or img_df.empty:
+        st.warning("No images in the database.")
         return
-
-    # Captions for any summary / one-liner about images
-    captions_for_summary: list[str] = []
-    if "caption" in results.columns:
-        for c in results["caption"].tolist():
-            if c is None:
-                continue
-            s = str(c).strip()
-            if s:
-                captions_for_summary.append(s)
-
-    # Description from Chroma text RAG (Epstein Files 20K docs); fallback to caption-based summary if Chroma not used
-    chroma_desc = description_from_chroma(query)
-    if chroma_desc:
-        st.subheader("Description")
-        st.markdown(chroma_desc)
-        # One-liner about the images (ordinary sentence, no label)
-        oneliner = _images_oneliner(captions_for_summary, settings)
-        if oneliner:
-            st.markdown(oneliner)
-        st.caption("*Note: shown images may not always be directly related to your query.*")
+    with st.spinner("Loading faces table..."):
+        try:
+            faces_df = faces_table.to_pandas()
+        except Exception:
+            try:
+                faces_df = faces_table.search().limit(2**31 - 1).to_pandas()
+            except Exception:
+                faces_df = faces_table.query().to_pandas() if hasattr(faces_table, "query") else faces_table.to_pandas()
+    if faces_df is None:
+        faces_df = pd.DataFrame()
+    # Dataset 6 = HS (House oversight / high school) folder
+    HS_DATASET_ID = 6
+    distinct_datasets = sorted(img_df["dataset_id"].dropna().unique().tolist())
+    def _dataset_label(did):
+        return "HS" if int(did) == HS_DATASET_ID else str(int(did))
+    dataset_options = ["All"] + [_dataset_label(d) for d in distinct_datasets]
+    dataset_filter = st.selectbox("Dataset", dataset_options, help="Filter by DOJ disclosure dataset (HS = House oversight)")
+    if dataset_filter == "All":
+        selected_dataset_id = None
+    elif dataset_filter == "HS":
+        selected_dataset_id = HS_DATASET_ID
     else:
-        summary = _summarize_results(query, captions_for_summary, settings)
-        st.subheader("Summary of results")
-        if summary:
-            st.markdown(summary)
-        else:
-            # Fallback when no Chroma and no caption summary (e.g. no GROQ_API_KEY or no captions)
-            if captions_for_summary:
-                st.markdown("Summary could not be generated. See captions below each image.")
-            else:
-                st.markdown("See the images below. For a text description, set **CHROMA_DIR** or **CHROMA_HF_DATASET** and **GROQ_API_KEY** in `.env` on the server.")
+        selected_dataset_id = int(dataset_filter)
 
-    # Grid of results: 3 per row
-    ncols = 3
-    for start in range(0, len(results), ncols):
-        row_results = results.iloc[start : start + ncols]
-        cols = st.columns(ncols)
-        for i, (_, row) in enumerate(row_results.iterrows()):
-            with cols[i]:
-                blob = row.get("image_blob")
-                if blob is not None and isinstance(blob, (bytes, bytearray)):
-                    st.image(blob, width="stretch")
-                st.markdown(f"**{row.get('source_file', '')}** p.{row.get('page_no', '')}")
-                # Caption (no heading); empty = caption step failed during pipeline (API/timeout)
-                cap = row.get("caption")
-                if cap is not None and str(cap).strip():
-                    st.caption(str(cap).strip())
-                else:
-                    st.caption("_(No caption)_")
-                # People present (from face recognition); may be list or numpy array from LanceDB
-                celebs = row.get("celebrities")
-                if celebs is not None:
-                    try:
-                        names = [str(x).strip() for x in celebs if x is not None and str(x).strip()]
-                        if names:
-                            st.caption(", ".join(n.replace("_", " ") for n in names))
-                    except (TypeError, ValueError):
-                        st.caption(str(celebs).replace("_", " "))
+    people_search = st.text_input("Search people", placeholder="Filter clusters by name (e.g. Bill)")
+    people_query = (people_search or "").strip().lower()
+
+    # When a dataset is selected, only show clusters that appear in that dataset
+    cluster_ids_in_dataset = None
+    if selected_dataset_id is not None and not faces_df.empty and not img_df.empty:
+        image_ids_in_dataset = set(img_df[img_df["dataset_id"] == selected_dataset_id]["id"].astype(str))
+        cluster_ids_in_dataset = set(
+            faces_df[faces_df["image_id"].astype(str).isin(image_ids_in_dataset)]["cluster_id"].dropna().unique().tolist()
+        )
+
+    # Filter representatives: exclude noise (-1); filter by name if search non-empty; by dataset if selected
+    reps_filtered = []
+    for r in representatives:
+        cid = r.get("cluster_id")
+        if cid is None or int(cid) < 0:
+            continue
+        if cluster_ids_in_dataset is not None and int(cid) not in cluster_ids_in_dataset:
+            continue
+        name = cluster_names.get(str(cid), f"Person {cid}")
+        if people_query and people_query not in name.lower():
+            continue
+        reps_filtered.append(r)
+
+    # Face circles: show representative crop per cluster; click to select
+    st.subheader("People (click to see images)")
+    if not reps_filtered:
+        if people_query:
+            st.info("No clusters match that name. Try a different search or rename a cluster.")
+        else:
+            st.info("No face clusters yet, or all are noise. Run the pipeline with more images.")
+    else:
+        # Small circular avatars in a horizontal grid
+        n_cols = min(12, max(1, len(reps_filtered)))
+        cols = st.columns(n_cols)
+        circle_px = 48
+        for idx, rep in enumerate(reps_filtered):
+            cid = rep.get("cluster_id")
+            # Start from global representative for this cluster
+            image_id = rep.get("image_id")
+            bbox = rep.get("bbox") or [0, 0, 0, 0]
+            # If a dataset is selected, try to use a representative from that dataset
+            if selected_dataset_id is not None and not faces_df.empty and not img_df.empty:
+                try:
+                    # Faces in this cluster
+                    fsub = faces_df[faces_df["cluster_id"] == int(cid)]
+                    if not fsub.empty:
+                        # Join to images to get dataset_id per face
+                        merged = fsub.merge(
+                            img_df[["id", "dataset_id"]].rename(columns={"id": "img_id"}),
+                            left_on="image_id",
+                            right_on="img_id",
+                            how="left",
+                        )
+                        cand = merged[merged["dataset_id"] == selected_dataset_id]
+                        if not cand.empty:
+                            row0 = cand.iloc[0]
+                            image_id = row0.get("image_id", image_id)
+                            bbox = row0.get("bbox", bbox) or bbox
+                except Exception:
+                    # Best-effort; fall back to original representative
+                    pass
+
+            name = cluster_names.get(str(cid), f"Person {cid}")
+            col = cols[idx % n_cols]
+            with col:
+                rows = img_df[img_df["id"].astype(str) == str(image_id)]
+                img_html = ""
+                if not rows.empty:
+                    path = rows.iloc[0].get("image_path")
+                    blob = _image_bytes_from_path(path)
+                    crop_bytes = _crop_image_to_bbox(blob, bbox) if blob else None
+                    if crop_bytes:
+                        try:
+                            b64 = base64.b64encode(crop_bytes).decode("ascii")
+                            img_html = (
+                                f'<img src="data:image/png;base64,{b64}" '
+                                f'style="border-radius:50%; width:{circle_px}px; height:{circle_px}px; '
+                                f'object-fit:cover; display:block; margin:0 auto;" />'
+                            )
+                        except Exception:
+                            img_html = ""
+
+                # Render circle (if any) and name, centered
+                if img_html:
+                    st.markdown(f"<div style='text-align:center'>{img_html}</div>", unsafe_allow_html=True)
+                button_label = name
+                if st.button(button_label, key=f"cluster_btn_{cid}"):
+                    st.session_state["selected_cluster_id"] = int(cid)
+                if st.session_state.get("selected_cluster_id") == int(cid):
+                    st.caption("✓ Selected")
+
+    selected_cluster_id = st.session_state.get("selected_cluster_id")
+
+    if selected_cluster_id is not None:
+        st.divider()
+        st.subheader(f"Images for cluster: {cluster_names.get(str(selected_cluster_id), f'Person {selected_cluster_id}')}")
+
+        # Rename cluster
+        rename_key = f"rename_{selected_cluster_id}"
+        current_name = cluster_names.get(str(selected_cluster_id), f"Person {selected_cluster_id}")
+        new_name = st.text_input("Rename this cluster", value=current_name, key=rename_key)
+        if st.button("Save name"):
+            if new_name and new_name.strip():
+                cluster_names[str(selected_cluster_id)] = new_name.strip()
+                face_store.save_cluster_names(lancedb_dir, cluster_names)
+                st.success("Name saved.")
+                st.rerun()
+
+        # Image grid: faces where cluster_id = selected_cluster_id -> image_ids -> filter by dataset -> show images
+        face_df = faces_df[faces_df["cluster_id"] == int(selected_cluster_id)] if not faces_df.empty else faces_df
+        if face_df.empty:
+            st.caption("No images for this cluster.")
+        else:
+            image_ids = face_df["image_id"].unique().tolist()
+            # Subset images we already have by image_id and optional dataset filter
+            id_set = set(str(i) for i in image_ids)
+            img_subset = img_df[img_df["id"].astype(str).isin(id_set)].copy()
+            if selected_dataset_id is not None:
+                img_subset = img_subset[img_subset["dataset_id"] == selected_dataset_id]
+            if img_subset.empty:
+                st.caption("No images in the selected dataset for this cluster.")
+            else:
+                ncols = 3
+                for start in range(0, len(img_subset), ncols):
+                    row_imgs = img_subset.iloc[start : start + ncols]
+                    cols = st.columns(ncols)
+                    for i, (_, row) in enumerate(row_imgs.iterrows()):
+                        with cols[i]:
+                            blob = _image_bytes_from_path(row.get("image_path"))
+                            if blob is not None:
+                                st.image(blob, use_container_width=True)
+                            else:
+                                st.caption("(image file not found)")
+                            st.caption(f"{row.get('source_file', '')} p.{row.get('page_no', '')}")
+
+    if selected_cluster_id is None and not reps_filtered:
+        st.caption("Select a person above to view their images.")
 
 
 if __name__ == "__main__":
