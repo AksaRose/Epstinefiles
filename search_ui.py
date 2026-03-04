@@ -3,10 +3,11 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import os
-import base64
 from pathlib import Path
+from urllib.parse import quote
 
 import pandas as pd
 import lancedb
@@ -70,6 +71,35 @@ def _get_face_tables():
 def main():
     _BLANK_FAVICON = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
     st.set_page_config(page_title="Epstein Image Gallery", layout="wide", page_icon=_BLANK_FAVICON)
+
+    # Task bar icon clicks: link adds ?taskbar=filters|people; we toggle panel and clear URL param
+    taskbar_val = st.query_params.get("taskbar")
+    if taskbar_val:
+        taskbar_val = str(taskbar_val).strip().lower()
+        if taskbar_val == "filters":
+            st.session_state["taskbar_show_filters"] = not st.session_state.get("taskbar_show_filters", False)
+        elif taskbar_val == "people":
+            st.session_state["taskbar_show_people"] = not st.session_state.get("taskbar_show_people", False)
+        try:
+            del st.query_params["taskbar"]
+        except KeyError:
+            pass
+        st.rerun()
+
+    # Clicking a person card (link ?cluster=id) selects that person and shows their images
+    cluster_param = st.query_params.get("cluster")
+    if cluster_param:
+        try:
+            cid = int(str(cluster_param).strip())
+            st.session_state["selected_cluster_id"] = cid
+            try:
+                del st.query_params["cluster"]
+            except KeyError:
+                pass
+            st.rerun()
+        except ValueError:
+            pass
+
     st.components.v1.html(
         """
         <script type="text/javascript">
@@ -118,6 +148,12 @@ def main():
             #epstein-taskbar button:active { background: #4a4a56; }
             #epstein-taskbar button svg { width: 22px; height: 22px; fill: #fafafa; color: #fafafa; }
             #epstein-taskbar button svg path { fill: #fafafa; }
+            #epstein-taskbar a.taskbar-link {
+                width: 40px; height: 40px; border-radius: 8px; display: flex; align-items: center; justify-content: center;
+                background: transparent; color: #fafafa; text-decoration: none;
+            }
+            #epstein-taskbar a.taskbar-link:hover { background: #3a3a46; }
+            #epstein-taskbar a.taskbar-link svg { width: 22px; height: 22px; }
             /* Streamlit sidebar toggle (>>) — force task bar color #262730 */
             [data-testid="collapsedControl"],
             [data-testid="collapsedControl"] button,
@@ -152,12 +188,12 @@ def main():
             <button type="button" id="epstein-sidebar-toggle" title="Open sidebar">
                 <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fafafa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>
             </button>
-            <button type="button" title="Filters — Dataset & search">
+            <a href="?taskbar=filters" class="taskbar-link" title="Filters — Dataset & search" target="_self">
                 <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fafafa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
-            </button>
-            <button type="button" title="People — Choose a person">
+            </a>
+            <a href="?taskbar=people" class="taskbar-link" title="People — Choose a person" target="_self">
                 <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fafafa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-            </button>
+            </a>
         </div>
         <script>
             document.getElementById('epstein-sidebar-toggle').onclick = function() {
@@ -237,22 +273,28 @@ def main():
     def _dataset_label(did):
         return "HS" if int(did) == HS_DATASET_ID else str(int(did))
     dataset_options = ["All"] + [_dataset_label(d) for d in distinct_datasets]
+    taskbar_show_filters = st.session_state.get("taskbar_show_filters", False)
+    taskbar_show_people = st.session_state.get("taskbar_show_people", False)
 
-    # Sidebar: filters + people list (Google Photos style)
+    # Main-area filters when Filter icon was clicked
+    if taskbar_show_filters:
+        st.subheader("Filters")
+        st.selectbox("Dataset", dataset_options, key="filter_dataset", help="Filter by DOJ disclosure dataset")
+        st.text_input("Search people", placeholder="Filter by name (e.g. Bill)", key="filter_people_search")
+        st.markdown("---")
+
+    # Sidebar: filters (if not in main) + people list
     with st.sidebar:
-        st.markdown("### Filters")
-        dataset_filter = st.selectbox("Dataset", dataset_options, help="Filter by DOJ disclosure dataset (HS = House oversight)")
-        if dataset_filter == "All":
-            selected_dataset_id = None
-        elif dataset_filter == "HS":
-            selected_dataset_id = HS_DATASET_ID
-        else:
-            selected_dataset_id = int(dataset_filter)
+        if not taskbar_show_filters:
+            st.markdown("### Filters")
+            st.selectbox("Dataset", dataset_options, key="filter_dataset", help="Filter by DOJ disclosure dataset (HS = House oversight)")
+            st.text_input("Search people", placeholder="Filter by name (e.g. Bill)", key="filter_people_search")
 
-        people_search = st.text_input("Search people", placeholder="Filter by name (e.g. Bill)")
-        people_query = (people_search or "").strip().lower()
+        # Shared filter state from session
+        filter_label = st.session_state.get("filter_dataset", "All")
+        selected_dataset_id = None if filter_label == "All" else (HS_DATASET_ID if filter_label == "HS" else int(filter_label))
+        people_query = (st.session_state.get("filter_people_search") or "").strip().lower()
 
-        # When a dataset is selected, only show clusters that appear in that dataset
         cluster_ids_in_dataset = None
         if selected_dataset_id is not None and not faces_df.empty and not img_df.empty:
             image_ids_in_dataset = set(img_df[img_df["dataset_id"] == selected_dataset_id]["id"].astype(str))
@@ -260,7 +302,6 @@ def main():
                 faces_df[faces_df["image_id"].astype(str).isin(image_ids_in_dataset)]["cluster_id"].dropna().unique().tolist()
             )
 
-        # Filter representatives
         reps_filtered = []
         for r in representatives:
             cid = r.get("cluster_id")
@@ -273,6 +314,10 @@ def main():
                 continue
             reps_filtered.append(r)
 
+        named_reps = [r for r in reps_filtered if str(r.get("cluster_id")) in cluster_names]
+        unnamed_reps = [r for r in reps_filtered if str(r.get("cluster_id")) not in cluster_names]
+        reps_ordered = named_reps + unnamed_reps
+
         st.markdown("---")
         st.markdown("### People")
         st.caption("Click a person to see their images.")
@@ -282,11 +327,6 @@ def main():
             else:
                 st.info("No face clusters.")
         else:
-            # Named first, then unnamed
-            named_reps = [r for r in reps_filtered if str(r.get("cluster_id")) in cluster_names]
-            unnamed_reps = [r for r in reps_filtered if str(r.get("cluster_id")) not in cluster_names]
-            reps_ordered = named_reps + unnamed_reps
-
             # Show first N, then "Show more"
             sidebar_show_limit = 10
             has_more = len(reps_ordered) > sidebar_show_limit
@@ -351,6 +391,98 @@ def main():
                         st.session_state["selected_cluster_id"] = int(cid)
                         st.rerun()
 
+    # Main-area people grid when People icon was clicked: whole card is clickable (no Select button)
+    if taskbar_show_people and reps_ordered:
+        st.subheader("People")
+        st.caption("Click a person to see their images.")
+
+        # Precompute image count per cluster (distinct images) once for performance
+        if not faces_df.empty:
+            cluster_image_count = (
+                faces_df.groupby("cluster_id")["image_id"].nunique().to_dict()
+            )
+        else:
+            cluster_image_count = {}
+
+        card_size = 100
+        n_cols = 6
+
+        # Show a limited number by default for faster initial load; allow user to expand
+        main_limit = 60
+        total_people = len(reps_ordered)
+        show_all_key = "show_all_main_people"
+        show_all = st.session_state.get(show_all_key, False)
+        if total_people > main_limit:
+            toggle_label = "Show all people" if not show_all else "Show fewer people"
+            if st.button(toggle_label, key="toggle_main_people"):
+                st.session_state[show_all_key] = not show_all
+                st.rerun()
+        reps_for_grid = (
+            reps_ordered
+            if (total_people <= main_limit or show_all)
+            else reps_ordered[:main_limit]
+        )
+        st.caption(f"Showing {len(reps_for_grid)} of {total_people} people")
+
+        cards_html = []
+        for rep in reps_for_grid:
+            cid = rep.get("cluster_id")
+            image_id = rep.get("image_id")
+            bbox = rep.get("bbox") or [0, 0, 0, 0]
+            if selected_dataset_id is not None and not faces_df.empty and not img_df.empty:
+                try:
+                    fsub = faces_df[faces_df["cluster_id"] == int(cid)]
+                    if not fsub.empty:
+                        merged = fsub.merge(
+                            img_df[["id", "dataset_id"]].rename(columns={"id": "img_id"}),
+                            left_on="image_id", right_on="img_id", how="left",
+                        )
+                        cand = merged[merged["dataset_id"] == selected_dataset_id]
+                        if not cand.empty:
+                            row0 = cand.iloc[0]
+                            image_id, bbox = row0.get("image_id", image_id), row0.get("bbox", bbox) or bbox
+                except Exception:
+                    pass
+            name = cluster_names.get(str(cid), f"Person {cid}")
+            n_imgs = cluster_image_count.get(int(cid), 0)
+            img_src = ""
+            rows = img_df[img_df["id"].astype(str) == str(image_id)]
+            if not rows.empty:
+                path = rows.iloc[0].get("image_path")
+                blob = _image_bytes_from_path(path)
+                crop_bytes = _crop_image_to_bbox(blob, bbox) if blob else None
+                if crop_bytes:
+                    try:
+                        b64 = base64.b64encode(crop_bytes).decode("utf-8")
+                        img_src = f'data:image/png;base64,{b64}'
+                    except Exception:
+                        pass
+            if not img_src:
+                _svg = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect fill="#333" width="100" height="100"/><text x="50" y="55" fill="#999" text-anchor="middle" font-size="12">?</text></svg>'
+                img_src = "data:image/svg+xml," + quote(_svg)
+            name_esc = name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+            cards_html.append(
+                f'<a href="?cluster={cid}" class="epstein-people-card" target="_self" title="{name_esc}">'
+                f'<img src="{img_src}" width="{card_size}" height="{card_size}" alt=""/>'
+                f'<span class="epstein-people-name">{name_esc}</span>'
+                f'<span class="epstein-people-count">{n_imgs} image{"s" if n_imgs != 1 else ""}</span>'
+                f"</a>"
+            )
+        grid_html = (
+            "<style>"
+            ".epstein-people-grid{display:grid;grid-template-columns:repeat(" + str(n_cols) + ",1fr);gap:1rem;margin:1rem 0;}"
+            ".epstein-people-card, .epstein-people-card:link, .epstein-people-card:visited, .epstein-people-card:hover, .epstein-people-card:active{ text-decoration:none; }"
+            ".epstein-people-card{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;color:inherit;border-radius:10px;padding:10px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);transition:background 0.15s ease,border-color 0.15s ease,transform 0.1s ease;}"
+            ".epstein-people-card:hover{background:#3a3a46;border-color:#565676;transform:translateY(-1px);}"
+            ".epstein-people-card img{width:100px;height:100px;object-fit:cover;border-radius:10px;box-shadow:0 2px 6px rgba(0,0,0,0.4);}"
+            ".epstein-people-name{font-weight:600;margin-top:6px;text-align:center;font-size:0.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;color:#f5f5f5;}"
+            ".epstein-people-count{font-size:0.8rem;color:#b3b3b3;margin-top:2px;}"
+            "</style>"
+            '<div class="epstein-people-grid">' + "".join(cards_html) + "</div>"
+        )
+        st.markdown(grid_html, unsafe_allow_html=True)
+        st.markdown("---")
+
     selected_cluster_id = st.session_state.get("selected_cluster_id")
 
     if selected_cluster_id is not None:
@@ -396,7 +528,7 @@ def main():
                             st.caption(f"{row.get('source_file', '')} p.{row.get('page_no', '')}")
 
     if selected_cluster_id is None and not reps_filtered:
-        st.caption("Select a person above to view their images.")
+        st.caption("Click a person above to view their images.")
 
 
 if __name__ == "__main__":
