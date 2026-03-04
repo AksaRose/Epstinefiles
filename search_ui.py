@@ -54,6 +54,19 @@ def _image_bytes_from_path(image_path: str | None) -> bytes | None:
     return None
 
 
+def _original_image_bytes(image_path: str | None) -> bytes | None:
+    """Load bytes from the original full-resolution image path."""
+    if not image_path:
+        return None
+    p = Path(image_path)
+    if not p.exists() or not p.is_file():
+        return None
+    try:
+        return p.read_bytes()
+    except Exception:
+        return None
+
+
 def _crop_image_to_bbox(blob: bytes, bbox: list[int]) -> bytes | None:
     """Crop image to bbox [x1,y1,x2,y2]; clamp to image size. Returns PNG bytes or None."""
     if not blob or len(bbox) < 4:
@@ -418,7 +431,8 @@ def main():
                 img_html = ""
                 if not rows.empty:
                     path = rows.iloc[0].get("image_path")
-                    blob = _image_bytes_from_path(path)
+                    # Use the original full-resolution page for face crops so bbox coordinates line up
+                    blob = _original_image_bytes(path)
                     crop_bytes = _crop_image_to_bbox(blob, bbox) if blob else None
                     if crop_bytes:
                         try:
@@ -515,7 +529,9 @@ def main():
             rows = img_df[img_df["id"].astype(str) == str(image_id)]
             if not rows.empty:
                 path = rows.iloc[0].get("image_path")
-                blob = _image_bytes_from_path(path)
+                # Use original image for representative face crops; thumbnails would
+                # misalign bbox coordinates and produce random-looking patches.
+                blob = _original_image_bytes(path)
                 crop_bytes = _crop_image_to_bbox(blob, bbox) if blob else None
                 if crop_bytes:
                     try:
