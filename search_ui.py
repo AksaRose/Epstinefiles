@@ -311,7 +311,8 @@ def main():
         return "HS" if int(did) == HS_DATASET_ID else str(int(did))
     dataset_options = ["All"] + [_dataset_label(d) for d in distinct_datasets]
     taskbar_show_filters = st.session_state.get("taskbar_show_filters", False)
-    taskbar_show_people = st.session_state.get("taskbar_show_people", False)
+    # Show the People grid by default on first load
+    taskbar_show_people = st.session_state.get("taskbar_show_people", True)
 
     # Main-area filters when Filter icon was clicked
     if taskbar_show_filters:
