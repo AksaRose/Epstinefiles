@@ -535,6 +535,17 @@ def main():
         st.divider()
         st.markdown(f"**Images for: {cluster_names.get(str(selected_cluster_id), f'Person {selected_cluster_id}')}**")
 
+        # Rename cluster
+        rename_key = f"rename_{selected_cluster_id}"
+        current_name = cluster_names.get(str(selected_cluster_id), f"Person {selected_cluster_id}")
+        new_name = st.text_input("Rename this cluster", value=current_name, key=rename_key)
+        if st.button("Save name"):
+            if new_name and new_name.strip():
+                cluster_names[str(selected_cluster_id)] = new_name.strip()
+                face_store.save_cluster_names(lancedb_dir, cluster_names)
+                st.success("Name saved.")
+                st.rerun()
+
         # Image grid: faces where cluster_id = selected_cluster_id -> image_ids -> filter by dataset -> show images
         face_df = faces_df[faces_df["cluster_id"] == int(selected_cluster_id)] if not faces_df.empty else faces_df
         if face_df.empty:
