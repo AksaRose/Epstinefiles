@@ -258,14 +258,20 @@ def main():
     st.title("Epstein Case Image Gallery")
 
     st.markdown(
-        "Explore DOJ-released images related to the Epstein case. "
-        "**Each circle is one person** – click to see all images containing that face. "
-        "Use the search box to find people by the names you give them."
+        "Browse images released by the U.S. Department of Justice in connection with the Epstein case. "
+        "Each square represents a person who appears in the documents – click to see the images where that "
+        "person shows up. You can use the search box to look for people by the names you recognize."
     )
     with st.expander("About & disclaimer", expanded=False):
         st.markdown(
-            "**Scope:** This gallery uses face detection and clustering (no caption/LLM). "
-            "All images are from DOJ disclosure. Do not rely on this for legal or factual conclusions."
+            "The images displayed in this application are taken from materials publicly released by the U.S. "
+            "Department of Justice in connection with the Epstein case. They consist of images from the DOJ "
+            "disclosure datasets (including datasets 1–5 and related image sets). This tool is an exploratory "
+            "interface built on automated face detection and clustering, and it can make mistakes; faces may be "
+            "misidentified, grouped incorrectly, or shown out of context. Nothing shown here should be treated "
+            "as a verified fact, legal conclusion, or evidence of wrongdoing. This system does not make or imply "
+            "any accusations, and it is not intended to defame, endorse, or pass judgment on any person depicted "
+            "or named."
         )
 
     try:
@@ -464,7 +470,7 @@ def main():
     show_people_grid = taskbar_show_people or show_people_from_search
 
     if show_people_grid and reps_ordered:
-        st.caption("People that match your current filters. Click one to open their images.")
+        # No extra caption here to keep the landing view clean.
         # Precompute image count per cluster (distinct images) once for performance,
         # respecting the current dataset filter if one is selected.
         if not faces_df.empty:
