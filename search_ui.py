@@ -221,9 +221,9 @@ def main():
     st.title("Epstein Case Image Gallery")
 
     st.markdown(
-        "Image gallery of DOJ-released materials related to the Epstein case. "
-        "**Faces are clustered** — click a person below to see all images containing that face. "
-        "Use the search box to filter clusters by name; you can rename any cluster."
+        "Explore DOJ-released images related to the Epstein case. "
+        "**Each circle is one person** – click to see all images containing that face. "
+        "Use the search box to find people by the names you give them."
     )
     with st.expander("About & disclaimer", expanded=False):
         st.markdown(
@@ -278,17 +278,15 @@ def main():
 
     # Main-area filters when Filter icon was clicked
     if taskbar_show_filters:
-        st.subheader("Filters")
-        st.selectbox("Dataset", dataset_options, key="filter_dataset", help="Filter by DOJ disclosure dataset")
-        st.text_input("Search people", placeholder="Filter by name (e.g. Bill)", key="filter_people_search")
+        st.selectbox("Dataset", dataset_options, key="filter_dataset", help="Limit results to one disclosure batch")
+        st.text_input("Search people", placeholder="Type a name you gave a person", key="filter_people_search")
         st.markdown("---")
 
     # Sidebar: filters (if not in main) + people list
     with st.sidebar:
         if not taskbar_show_filters:
-            st.markdown("### Filters")
-            st.selectbox("Dataset", dataset_options, key="filter_dataset", help="Filter by DOJ disclosure dataset (HS = House oversight)")
-            st.text_input("Search people", placeholder="Filter by name (e.g. Bill)", key="filter_people_search")
+            st.selectbox("Dataset", dataset_options, key="filter_dataset", help="Limit results to one disclosure batch (HS = House oversight)")
+            st.text_input("Search people", placeholder="Type a name you gave a person", key="filter_people_search")
 
         # Shared filter state from session
         filter_label = st.session_state.get("filter_dataset", "All")
@@ -350,7 +348,7 @@ def main():
         reps_ordered = named_reps + unnamed_reps
 
         st.markdown("---")
-        st.markdown("### People")
+        st.markdown("**People**")
         st.caption("Click a person to see their images.")
         if not reps_filtered:
             if people_query:
@@ -427,9 +425,7 @@ def main():
     show_people_grid = taskbar_show_people or show_people_from_search
 
     if show_people_grid and reps_ordered:
-        st.subheader("People")
-        st.caption("Click a person to see their images.")
-
+        st.caption("People that match your current filters. Click one to open their images.")
         # Precompute image count per cluster (distinct images) once for performance,
         # respecting the current dataset filter if one is selected.
         if not faces_df.empty:
@@ -537,18 +533,7 @@ def main():
 
     if selected_cluster_id is not None:
         st.divider()
-        st.subheader(f"Images for cluster: {cluster_names.get(str(selected_cluster_id), f'Person {selected_cluster_id}')}")
-
-        # Rename cluster
-        rename_key = f"rename_{selected_cluster_id}"
-        current_name = cluster_names.get(str(selected_cluster_id), f"Person {selected_cluster_id}")
-        new_name = st.text_input("Rename this cluster", value=current_name, key=rename_key)
-        if st.button("Save name"):
-            if new_name and new_name.strip():
-                cluster_names[str(selected_cluster_id)] = new_name.strip()
-                face_store.save_cluster_names(lancedb_dir, cluster_names)
-                st.success("Name saved.")
-                st.rerun()
+        st.markdown(f"**Images for: {cluster_names.get(str(selected_cluster_id), f'Person {selected_cluster_id}')}**")
 
         # Image grid: faces where cluster_id = selected_cluster_id -> image_ids -> filter by dataset -> show images
         face_df = faces_df[faces_df["cluster_id"] == int(selected_cluster_id)] if not faces_df.empty else faces_df
