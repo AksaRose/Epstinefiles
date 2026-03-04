@@ -72,7 +72,7 @@ def main():
     _BLANK_FAVICON = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
     st.set_page_config(page_title="Epstein Image Gallery", layout="wide", page_icon=_BLANK_FAVICON)
 
-    # Task bar icon clicks: link adds ?taskbar=filters|people; we toggle panel and clear URL param
+    # Task bar icon clicks: link adds ?taskbar=filters|people; we toggle panel and clear URL param.
     taskbar_val = st.query_params.get("taskbar")
     if taskbar_val:
         taskbar_val = str(taskbar_val).strip().lower()
@@ -314,8 +314,39 @@ def main():
                 continue
             reps_filtered.append(r)
 
+        # Named clusters first, then unnamed clusters ordered by highest image count
         named_reps = [r for r in reps_filtered if str(r.get("cluster_id")) in cluster_names]
         unnamed_reps = [r for r in reps_filtered if str(r.get("cluster_id")) not in cluster_names]
+
+        # Compute image counts per cluster (respecting dataset filter if present)
+        if not faces_df.empty:
+            if selected_dataset_id is not None and not img_df.empty:
+                img_ids_ds = set(
+                    img_df[img_df["dataset_id"] == selected_dataset_id]["id"].astype(str)
+                )
+                faces_for_counts = faces_df[
+                    faces_df["image_id"].astype(str).isin(img_ids_ds)
+                ]
+            else:
+                faces_for_counts = faces_df
+            cluster_image_count_sidebar = (
+                faces_for_counts.groupby("cluster_id")["image_id"].nunique().to_dict()
+                if not faces_for_counts.empty
+                else {}
+            )
+        else:
+            cluster_image_count_sidebar = {}
+
+        def _count_for_rep(rep: dict) -> int:
+            cid = rep.get("cluster_id")
+            try:
+                return int(cluster_image_count_sidebar.get(int(cid), 0))
+            except Exception:
+                return 0
+
+        # Sort both named and unnamed by image count (descending), but keep named first
+        named_reps = sorted(named_reps, key=_count_for_rep, reverse=True)
+        unnamed_reps = sorted(unnamed_reps, key=_count_for_rep, reverse=True)
         reps_ordered = named_reps + unnamed_reps
 
         st.markdown("---")
@@ -391,15 +422,30 @@ def main():
                         st.session_state["selected_cluster_id"] = int(cid)
                         st.rerun()
 
-    # Main-area people grid when People icon was clicked: whole card is clickable (no Select button)
-    if taskbar_show_people and reps_ordered:
+    # Main-area people grid: shown when People icon is active OR when there's a search query
+    show_people_from_search = bool((st.session_state.get("filter_people_search") or "").strip())
+    show_people_grid = taskbar_show_people or show_people_from_search
+
+    if show_people_grid and reps_ordered:
         st.subheader("People")
         st.caption("Click a person to see their images.")
 
-        # Precompute image count per cluster (distinct images) once for performance
+        # Precompute image count per cluster (distinct images) once for performance,
+        # respecting the current dataset filter if one is selected.
         if not faces_df.empty:
+            if selected_dataset_id is not None and not img_df.empty:
+                img_ids_ds_main = set(
+                    img_df[img_df["dataset_id"] == selected_dataset_id]["id"].astype(str)
+                )
+                faces_for_counts_main = faces_df[
+                    faces_df["image_id"].astype(str).isin(img_ids_ds_main)
+                ]
+            else:
+                faces_for_counts_main = faces_df
             cluster_image_count = (
-                faces_df.groupby("cluster_id")["image_id"].nunique().to_dict()
+                faces_for_counts_main.groupby("cluster_id")["image_id"].nunique().to_dict()
+                if not faces_for_counts_main.empty
+                else {}
             )
         else:
             cluster_image_count = {}
@@ -408,7 +454,7 @@ def main():
         n_cols = 6
 
         # Show a limited number by default for faster initial load; allow user to expand
-        main_limit = 60
+        main_limit = 30
         total_people = len(reps_ordered)
         show_all_key = "show_all_main_people"
         show_all = st.session_state.get(show_all_key, False)
@@ -482,6 +528,10 @@ def main():
         )
         st.markdown(grid_html, unsafe_allow_html=True)
         st.markdown("---")
+
+    # When searching by name but no people match, show a friendly message
+    if show_people_grid and not reps_ordered and show_people_from_search:
+        st.info("No people matched this search. Try a different name.")
 
     selected_cluster_id = st.session_state.get("selected_cluster_id")
 
