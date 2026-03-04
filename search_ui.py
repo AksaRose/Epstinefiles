@@ -220,6 +220,32 @@ def main():
                 background: #3a3a46 !important;
                 background-color: #3a3a46 !important;
             }
+            /* Responsive adjustments for narrow screens */
+            @media (max-width: 768px) {
+                section.main .block-container {
+                    padding-left: 16px !important;
+                    padding-right: 16px !important;
+                }
+                #epstein-taskbar {
+                    position: fixed;
+                    left: 0;
+                    bottom: 0;
+                    top: auto;
+                    width: 100vw;
+                    height: 56px;
+                    flex-direction: row;
+                    justify-content: center;
+                    padding-top: 0;
+                    padding-bottom: 0.5rem;
+                    border-right: none;
+                    border-top: 1px solid #3a3a46;
+                }
+                #epstein-taskbar button,
+                #epstein-taskbar a.taskbar-link {
+                    width: 44px;
+                    height: 44px;
+                }
+            }
         </style>
         <div id="epstein-taskbar">
             <button type="button" id="epstein-sidebar-toggle" title="Open sidebar">
@@ -465,9 +491,11 @@ def main():
                         st.session_state["selected_cluster_id"] = int(cid)
                         st.rerun()
 
-    # Main-area people grid: shown when People icon is active OR when there's a search query
+    # Main-area people grid: shown when People icon is active OR when there's a search query,
+    # but hidden once a specific person has been selected (to focus on that person's photos).
     show_people_from_search = bool((st.session_state.get("filter_people_search") or "").strip())
-    show_people_grid = taskbar_show_people or show_people_from_search
+    selected_cluster_id_for_grid = st.session_state.get("selected_cluster_id")
+    show_people_grid = (taskbar_show_people or show_people_from_search) and not selected_cluster_id_for_grid
 
     if show_people_grid and reps_ordered:
         # No extra caption here to keep the landing view clean.
@@ -560,6 +588,9 @@ def main():
         grid_html = (
             "<style>"
             ".epstein-people-grid{display:grid;grid-template-columns:repeat(" + str(n_cols) + ",1fr);gap:1rem;margin:1rem 0;}"
+            "@media (max-width: 1024px){.epstein-people-grid{grid-template-columns:repeat(4,1fr);}}"
+            "@media (max-width: 768px){.epstein-people-grid{grid-template-columns:repeat(3,1fr);}}"
+            "@media (max-width: 600px){.epstein-people-grid{grid-template-columns:repeat(2,1fr);}}"
             ".epstein-people-card, .epstein-people-card:link, .epstein-people-card:visited, .epstein-people-card:hover, .epstein-people-card:active{ text-decoration:none; }"
             ".epstein-people-card{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;color:inherit;border-radius:10px;padding:10px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);transition:background 0.15s ease,border-color 0.15s ease,transform 0.1s ease;}"
             ".epstein-people-card:hover{background:#3a3a46;border-color:#565676;transform:translateY(-1px);}"
