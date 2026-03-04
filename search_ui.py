@@ -17,17 +17,40 @@ from config import load_settings
 from pipeline import face_store
 
 
+def _thumbnail_path_for(original: Path) -> Path:
+    """
+    Given a full image path under epstein_pdfs, map it to the matching path under
+    epstein_thumbs (same relative structure). If we can't recognize the pattern,
+    fall back to the original path.
+    """
+    parts = list(original.parts)
+    if "epstein_pdfs" in parts:
+        idx = parts.index("epstein_pdfs")
+        # /.../epstein_pdfs/... -> /.../epstein_thumbs/...
+        return Path(*parts[:idx], "epstein_thumbs", *parts[idx + 1 :])
+    return original
+
+
 def _image_bytes_from_path(image_path: str | None) -> bytes | None:
-    """Load image bytes from disk. Returns None if path missing or unreadable."""
+    """
+    Load image bytes from disk.
+
+    Prefer a pre-generated thumbnail in epstein_thumbs (if present), otherwise
+    fall back to the original full-resolution image. Returns None if nothing
+    is readable.
+    """
     if not image_path:
         return None
-    p = Path(image_path)
-    if not p.exists() or not p.is_file():
-        return None
-    try:
-        return p.read_bytes()
-    except Exception:
-        return None
+    orig = Path(image_path)
+    thumb = _thumbnail_path_for(orig)
+    for candidate in (thumb, orig):
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        try:
+            return candidate.read_bytes()
+        except Exception:
+            continue
+    return None
 
 
 def _crop_image_to_bbox(blob: bytes, bbox: list[int]) -> bytes | None:
@@ -549,15 +572,35 @@ def main():
             if img_subset.empty:
                 st.caption("No images in the selected dataset for this cluster.")
             else:
+                # Light "lazy loading": show a limited number by default, allow user to expand
+                images_limit = 30
+                total_imgs = len(img_subset)
+                show_all_key = f"show_all_images_cluster_{selected_cluster_id}"
+                show_all = st.session_state.get(show_all_key, False)
+                if total_imgs > images_limit:
+                    label = "Show all images" if not show_all else "Show fewer images"
+                    if st.button(label, key=f"toggle_images_{selected_cluster_id}"):
+                        st.session_state[show_all_key] = not show_all
+                        st.rerun()
+                display_subset = (
+                    img_subset
+                    if (total_imgs <= images_limit or show_all)
+                    else img_subset.iloc[:images_limit]
+                )
+                st.caption(f"Showing {len(display_subset)} of {total_imgs} images")
+
                 ncols = 3
-                for start in range(0, len(img_subset), ncols):
-                    row_imgs = img_subset.iloc[start : start + ncols]
+                for start in range(0, len(display_subset), ncols):
+                    row_imgs = display_subset.iloc[start : start + ncols]
                     cols = st.columns(ncols)
                     for i, (_, row) in enumerate(row_imgs.iterrows()):
                         with cols[i]:
                             blob = _image_bytes_from_path(row.get("image_path"))
                             if blob is not None:
-                                st.image(blob, use_container_width=True)
+                                try:
+                                    st.image(blob, use_container_width=True)
+                                except Exception:
+                                    st.caption("(image failed to render)")
                             else:
                                 st.caption("(image file not found)")
                             st.caption(f"{row.get('source_file', '')} p.{row.get('page_no', '')}")
