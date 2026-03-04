@@ -82,31 +82,107 @@ def main():
         """,
         height=0,
     )
-    st.title("Epstein Case Image Gallery")
+    # Vertical task bar on the left (fixed); Lucide icons; sidebar toggle styled like task bar
+    st.markdown(
+        """
+        <style>
+            section.main .block-container { padding-left: 56px !important; }
+            #epstein-taskbar {
+                position: fixed;
+                left: 0;
+                top: 0;
+                width: 56px;
+                height: 100vh;
+                background: #262730;
+                z-index: 999;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                padding-top: 1rem;
+                gap: 0.5rem;
+                border-right: 1px solid #3a3a46;
+            }
+            #epstein-taskbar button {
+                width: 40px;
+                height: 40px;
+                border: none;
+                border-radius: 8px;
+                background: transparent;
+                color: #fafafa;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            #epstein-taskbar button:hover { background: #3a3a46; }
+            #epstein-taskbar button:active { background: #4a4a56; }
+            #epstein-taskbar button svg { width: 22px; height: 22px; fill: #fafafa; color: #fafafa; }
+            #epstein-taskbar button svg path { fill: #fafafa; }
+            /* Streamlit sidebar toggle (>>) — force task bar color #262730 */
+            [data-testid="collapsedControl"],
+            [data-testid="collapsedControl"] button,
+            [data-testid="stSidebarCollapsedControl"],
+            [data-testid="stSidebarCollapsedControl"] button,
+            section[data-testid="stSidebar"] button[kind="header"],
+            section[data-testid="stSidebar"] [data-testid="collapsedControl"],
+            div[data-testid="stSidebar"] > div:first-child > button,
+            button[data-testid="baseButton-header"] {
+                background: #262730 !important;
+                background-color: #262730 !important;
+                color: #fafafa !important;
+                border-color: #3a3a46 !important;
+                fill: #fafafa !important;
+            }
+            [data-testid="collapsedControl"] svg,
+            [data-testid="collapsedControl"] path,
+            section[data-testid="stSidebar"] button[kind="header"] svg,
+            section[data-testid="stSidebar"] button[kind="header"] path {
+                fill: #fafafa !important;
+                color: #fafafa !important;
+            }
+            [data-testid="collapsedControl"]:hover,
+            [data-testid="collapsedControl"]:hover button,
+            [data-testid="stSidebarCollapsedControl"]:hover,
+            section[data-testid="stSidebar"] button[kind="header"]:hover {
+                background: #3a3a46 !important;
+                background-color: #3a3a46 !important;
+            }
+        </style>
+        <div id="epstein-taskbar">
+            <button type="button" id="epstein-sidebar-toggle" title="Open sidebar">
+                <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fafafa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>
+            </button>
+            <button type="button" title="Filters — Dataset & search">
+                <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fafafa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+            </button>
+            <button type="button" title="People — Choose a person">
+                <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fafafa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            </button>
+        </div>
+        <script>
+            document.getElementById('epstein-sidebar-toggle').onclick = function() {
+                var btn = document.querySelector('[data-testid="collapsedControl"]')
+                    || document.querySelector('[data-testid="stSidebarCollapsedControl"]')
+                    || document.querySelector('button[kind="header"]')
+                    || document.querySelector('[aria-label*="sidebar" i]');
+                if (btn) btn.click();
+            };
+            /* Force task bar color onto sidebar toggle (Streamlit may override CSS) */
+            function styleSidebarToggle() {
+                document.querySelectorAll('[data-testid="collapsedControl"], section[data-testid="stSidebar"] button[kind="header"]').forEach(function(el) {
+                    el.style.setProperty('background', '#262730', 'important');
+                    el.style.setProperty('background-color', '#262730', 'important');
+                    el.style.setProperty('color', '#fafafa', 'important');
+                    el.querySelectorAll('svg, path').forEach(function(s) { s.style.setProperty('fill', '#fafafa', 'important'); });
+                });
+            }
+            [100, 400, 1000].forEach(function(ms) { setTimeout(styleSidebarToggle, ms); });
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    with st.sidebar:
-        st.markdown("### Support this project")
-        st.markdown(
-            "Any support from this project helps **keep this app online** and "
-            "**add more documents, images, and search features** over time."
-        )
-        st.components.v1.html(
-            """
-            <script
-                data-name="BMC-Widget"
-                data-cfasync="false"
-                src="https://cdnjs.buymeacoffee.com/1.0.0/widget.prod.min.js"
-                data-id="aksarose"
-                data-description="Support me on Buy me a coffee!"
-                data-message=""
-                data-color="#5F7FFF"
-                data-position="Left"
-                data-x_margin="18"
-                data-y_margin="18">
-            </script>
-            """,
-            height=80,
-        )
+    st.title("Epstein Case Image Gallery")
 
     st.markdown(
         "Image gallery of DOJ-released materials related to the Epstein case. "
@@ -161,80 +237,90 @@ def main():
     def _dataset_label(did):
         return "HS" if int(did) == HS_DATASET_ID else str(int(did))
     dataset_options = ["All"] + [_dataset_label(d) for d in distinct_datasets]
-    dataset_filter = st.selectbox("Dataset", dataset_options, help="Filter by DOJ disclosure dataset (HS = House oversight)")
-    if dataset_filter == "All":
-        selected_dataset_id = None
-    elif dataset_filter == "HS":
-        selected_dataset_id = HS_DATASET_ID
-    else:
-        selected_dataset_id = int(dataset_filter)
 
-    people_search = st.text_input("Search people", placeholder="Filter clusters by name (e.g. Bill)")
-    people_query = (people_search or "").strip().lower()
-
-    # When a dataset is selected, only show clusters that appear in that dataset
-    cluster_ids_in_dataset = None
-    if selected_dataset_id is not None and not faces_df.empty and not img_df.empty:
-        image_ids_in_dataset = set(img_df[img_df["dataset_id"] == selected_dataset_id]["id"].astype(str))
-        cluster_ids_in_dataset = set(
-            faces_df[faces_df["image_id"].astype(str).isin(image_ids_in_dataset)]["cluster_id"].dropna().unique().tolist()
-        )
-
-    # Filter representatives: exclude noise (-1); filter by name if search non-empty; by dataset if selected
-    reps_filtered = []
-    for r in representatives:
-        cid = r.get("cluster_id")
-        if cid is None or int(cid) < 0:
-            continue
-        if cluster_ids_in_dataset is not None and int(cid) not in cluster_ids_in_dataset:
-            continue
-        name = cluster_names.get(str(cid), f"Person {cid}")
-        if people_query and people_query not in name.lower():
-            continue
-        reps_filtered.append(r)
-
-    # Face circles: show representative crop per cluster; click to select
-    st.subheader("People (click to see images)")
-    if not reps_filtered:
-        if people_query:
-            st.info("No clusters match that name. Try a different search or rename a cluster.")
+    # Sidebar: filters + people list (Google Photos style)
+    with st.sidebar:
+        st.markdown("### Filters")
+        dataset_filter = st.selectbox("Dataset", dataset_options, help="Filter by DOJ disclosure dataset (HS = House oversight)")
+        if dataset_filter == "All":
+            selected_dataset_id = None
+        elif dataset_filter == "HS":
+            selected_dataset_id = HS_DATASET_ID
         else:
-            st.info("No face clusters yet, or all are noise. Run the pipeline with more images.")
-    else:
-        # Small circular avatars in a horizontal grid
-        n_cols = min(12, max(1, len(reps_filtered)))
-        cols = st.columns(n_cols)
-        circle_px = 48
-        for idx, rep in enumerate(reps_filtered):
-            cid = rep.get("cluster_id")
-            # Start from global representative for this cluster
-            image_id = rep.get("image_id")
-            bbox = rep.get("bbox") or [0, 0, 0, 0]
-            # If a dataset is selected, try to use a representative from that dataset
-            if selected_dataset_id is not None and not faces_df.empty and not img_df.empty:
-                try:
-                    # Faces in this cluster
-                    fsub = faces_df[faces_df["cluster_id"] == int(cid)]
-                    if not fsub.empty:
-                        # Join to images to get dataset_id per face
-                        merged = fsub.merge(
-                            img_df[["id", "dataset_id"]].rename(columns={"id": "img_id"}),
-                            left_on="image_id",
-                            right_on="img_id",
-                            how="left",
-                        )
-                        cand = merged[merged["dataset_id"] == selected_dataset_id]
-                        if not cand.empty:
-                            row0 = cand.iloc[0]
-                            image_id = row0.get("image_id", image_id)
-                            bbox = row0.get("bbox", bbox) or bbox
-                except Exception:
-                    # Best-effort; fall back to original representative
-                    pass
+            selected_dataset_id = int(dataset_filter)
 
+        people_search = st.text_input("Search people", placeholder="Filter by name (e.g. Bill)")
+        people_query = (people_search or "").strip().lower()
+
+        # When a dataset is selected, only show clusters that appear in that dataset
+        cluster_ids_in_dataset = None
+        if selected_dataset_id is not None and not faces_df.empty and not img_df.empty:
+            image_ids_in_dataset = set(img_df[img_df["dataset_id"] == selected_dataset_id]["id"].astype(str))
+            cluster_ids_in_dataset = set(
+                faces_df[faces_df["image_id"].astype(str).isin(image_ids_in_dataset)]["cluster_id"].dropna().unique().tolist()
+            )
+
+        # Filter representatives
+        reps_filtered = []
+        for r in representatives:
+            cid = r.get("cluster_id")
+            if cid is None or int(cid) < 0:
+                continue
+            if cluster_ids_in_dataset is not None and int(cid) not in cluster_ids_in_dataset:
+                continue
             name = cluster_names.get(str(cid), f"Person {cid}")
-            col = cols[idx % n_cols]
-            with col:
+            if people_query and people_query not in name.lower():
+                continue
+            reps_filtered.append(r)
+
+        st.markdown("---")
+        st.markdown("### People")
+        st.caption("Click a person to see their images.")
+        if not reps_filtered:
+            if people_query:
+                st.info("No match.")
+            else:
+                st.info("No face clusters.")
+        else:
+            # Named first, then unnamed
+            named_reps = [r for r in reps_filtered if str(r.get("cluster_id")) in cluster_names]
+            unnamed_reps = [r for r in reps_filtered if str(r.get("cluster_id")) not in cluster_names]
+            reps_ordered = named_reps + unnamed_reps
+
+            # Show first N, then "Show more"
+            sidebar_show_limit = 10
+            has_more = len(reps_ordered) > sidebar_show_limit
+            show_all_key = "show_all_people"
+            show_all = st.session_state.get(show_all_key, False)
+            if has_more:
+                if st.button("Show more people" if not show_all else "Show fewer", key="toggle_people"):
+                    st.session_state[show_all_key] = not show_all
+                    st.rerun()
+            reps_to_show = reps_ordered if (not has_more or show_all) else reps_ordered[:sidebar_show_limit]
+
+            circle_px = 44
+            for rep in reps_to_show:
+                cid = rep.get("cluster_id")
+                image_id = rep.get("image_id")
+                bbox = rep.get("bbox") or [0, 0, 0, 0]
+                if selected_dataset_id is not None and not faces_df.empty and not img_df.empty:
+                    try:
+                        fsub = faces_df[faces_df["cluster_id"] == int(cid)]
+                        if not fsub.empty:
+                            merged = fsub.merge(
+                                img_df[["id", "dataset_id"]].rename(columns={"id": "img_id"}),
+                                left_on="image_id",
+                                right_on="img_id",
+                                how="left",
+                            )
+                            cand = merged[merged["dataset_id"] == selected_dataset_id]
+                            if not cand.empty:
+                                row0 = cand.iloc[0]
+                                image_id = row0.get("image_id", image_id)
+                                bbox = row0.get("bbox", bbox) or bbox
+                    except Exception:
+                        pass
+                name = cluster_names.get(str(cid), f"Person {cid}")
                 rows = img_df[img_df["id"].astype(str) == str(image_id)]
                 img_html = ""
                 if not rows.empty:
@@ -247,19 +333,23 @@ def main():
                             img_html = (
                                 f'<img src="data:image/png;base64,{b64}" '
                                 f'style="border-radius:50%; width:{circle_px}px; height:{circle_px}px; '
-                                f'object-fit:cover; display:block; margin:0 auto;" />'
+                                f'object-fit:cover; vertical-align:middle;" />'
                             )
                         except Exception:
-                            img_html = ""
-
-                # Render circle (if any) and name, centered
-                if img_html:
-                    st.markdown(f"<div style='text-align:center'>{img_html}</div>", unsafe_allow_html=True)
-                button_label = name
-                if st.button(button_label, key=f"cluster_btn_{cid}"):
-                    st.session_state["selected_cluster_id"] = int(cid)
-                if st.session_state.get("selected_cluster_id") == int(cid):
-                    st.caption("✓ Selected")
+                            pass
+                # Row: circle + name button (Google Photos style)
+                col_thumb, col_btn = st.columns([1, 3])
+                with col_thumb:
+                    if img_html:
+                        st.markdown(f"<div>{img_html}</div>", unsafe_allow_html=True)
+                    else:
+                        st.caption("")
+                with col_btn:
+                    is_selected = st.session_state.get("selected_cluster_id") == int(cid)
+                    label = f"✓ {name}" if is_selected else name
+                    if st.button(label, key=f"cluster_btn_{cid}"):
+                        st.session_state["selected_cluster_id"] = int(cid)
+                        st.rerun()
 
     selected_cluster_id = st.session_state.get("selected_cluster_id")
 
