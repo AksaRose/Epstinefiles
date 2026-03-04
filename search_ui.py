@@ -26,8 +26,9 @@ def _thumbnail_path_for(original: Path) -> Path:
     parts = list(original.parts)
     if "epstein_pdfs" in parts:
         idx = parts.index("epstein_pdfs")
-        # /.../epstein_pdfs/... -> /.../epstein_thumbs/...
-        return Path(*parts[:idx], "epstein_thumbs", *parts[idx + 1 :])
+        # /.../epstein_pdfs/... -> /.../epstein_thumbs/... and always use .jpg like generator
+        base = Path(*parts[:idx], "epstein_thumbs", *parts[idx + 1 :])
+        return base.with_suffix(".jpg")
     return original
 
 
